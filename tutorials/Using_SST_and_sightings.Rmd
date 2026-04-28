@@ -140,7 +140,8 @@ Pass the `TwilightFree` model object to `SGAT::essie` which calculates the poste
 # fit the model using the grid from `makeGrid`
 fit <- SGAT::essie(model,grid,epsilon1=1.0E-4, epsilon2 = 1E-4)
 
-# EXPERIMENTAL: slightly faster with essierust package
+# EXPERIMENTAL: ~25% faster with essierust package
+# to install:  pak::pak("ABindoff/essierust") 
 #fit <- essierust::essie(model,grid,epsilon1=1.0E-4, epsilon2 = 1E-4)
 
 ```
@@ -149,7 +150,7 @@ fit <- SGAT::essie(model,grid,epsilon1=1.0E-4, epsilon2 = 1E-4)
 
 ```{r}
 # plot the result
-locs <- trip(fit)
+locs <- trip(fit0)
 drawTracks(locs, pacific = T)
 ```
 
