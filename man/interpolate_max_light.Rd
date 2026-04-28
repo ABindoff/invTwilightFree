@@ -4,8 +4,24 @@
 \alias{interpolate_max_light}
 \title{Find max light observations over a coarse time grid then interpolate at finer grid}
 \usage{
-interpolate_max_light(d, depth1 = FALSE, depth2 = FALSE,
-  period1 = "30 minutes", period2 = "4 minutes")
+interpolate_max_light(
+  d,
+  depth1 = FALSE,
+  depth2 = FALSE,
+  period1 = "30 minutes",
+  period2 = "4 minutes"
+)
+}
+\arguments{
+\item{d}{data frame with Light, Date, and optionally Depth columns}
+
+\item{depth1}{depth filter applied to the coarse grid pass; FALSE to skip}
+
+\item{depth2}{depth filter applied to the fine grid pass; FALSE to skip}
+
+\item{period1}{time period for the coarse grid (e.g. "30 minutes")}
+
+\item{period2}{time period for the fine grid (e.g. "4 minutes")}
 }
 \value{
 see help(max_light_delta) for relevant details

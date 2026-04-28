@@ -4,8 +4,13 @@
 \alias{makeGrid}
 \title{Make a grid for TwilightFree model incorporating land or sea mask}
 \usage{
-makeGrid(lon = c(-180, 180), lat = c(-90, 90), cell.size = 1,
-  mask = "sea", pacific = FALSE)
+makeGrid(
+  lon = c(-180, 180),
+  lat = c(-90, 90),
+  cell.size = 1,
+  mask = "sea",
+  pacific = FALSE
+)
 }
 \arguments{
 \item{lon}{extents of longitude}

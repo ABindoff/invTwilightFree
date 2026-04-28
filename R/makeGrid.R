@@ -6,15 +6,16 @@
 #' @param mask set mask for areas animals are assumed to be restricted to, "sea", "land", or "none"
 #' @param pacific optional Pacific-centred map, defaults to Atlantic-centred map
 #' @export
-#' @import maptools
+#' @importFrom rnaturalearth ne_countries
+#' @importFrom sf st_shift_longitude st_geometry
 #' @import polyclip
 #' @importFrom raster raster rasterize
 #' @import sp
 #' @return raster object giving the locations the animal may have visited
 makeGrid <- function(lon = c(-180, 180), lat = c(-90, 90), cell.size = 1, mask = "sea", pacific = FALSE) {
-  data(wrld_simpl, package = "maptools", envir = environment())
+  wrld_simpl <- rnaturalearth::ne_countries(scale = "small", returnclass = "sf")
   if(pacific){
-    wrld_simpl <- nowrapRecenter(wrld_simpl, avoidGEOS = TRUE)}
+    wrld_simpl <- sf::st_shift_longitude(wrld_simpl)}
   nrows <- abs(lat[2L] - lat[1L]) / cell.size
   ncols <- abs(lon[2L] - lon[1L]) / cell.size
   grid <- raster(
@@ -24,7 +25,7 @@ makeGrid <- function(lon = c(-180, 180), lat = c(-90, 90), cell.size = 1, mask =
     xmx = max(lon),
     ymn = min(lat),
     ymx = max(lat),
-    crs = proj4string(wrld_simpl)
+    crs = "+proj=longlat +datum=WGS84 +no_defs"
   )
   grid <- rasterize(wrld_simpl, grid, 1, silent = TRUE)
   grid <- is.na(grid)

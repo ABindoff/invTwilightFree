@@ -14,6 +14,8 @@ zenithPlot(x, gps, threshold = 0, zenith = 95, offset = 0)
 \item{threshold}{numeric Light intensity at twilight}
 
 \item{zenith}{solar zenith angle estimated from data}
+
+\item{offset}{offset in hours used to centre night within the plot y-axis}
 }
 \value{
 plot of thresholded Light data with simulated zeniths highlighted

@@ -8,6 +8,16 @@ findZenith(d, day, lon, lat, offset = 0, threshold = 5)
 }
 \arguments{
 \item{d}{data frame with Light, Date columns at minimum}
+
+\item{day}{a date as a POSIXct or numeric (seconds since epoch)}
+
+\item{lon}{longitude of assumed location}
+
+\item{lat}{latitude of assumed location}
+
+\item{offset}{offset in hours used to centre night within the plot y-axis}
+
+\item{threshold}{ambient light threshold at which twilight is assumed to occur}
 }
 \value{
 numeric zenith angle

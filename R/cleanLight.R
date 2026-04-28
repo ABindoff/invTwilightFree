@@ -1,4 +1,9 @@
 #' Find max light observations over a coarse time grid then interpolate at finer grid
+#' @param d data frame with Light, Date, and optionally Depth columns
+#' @param depth1 depth filter applied to the coarse grid pass; FALSE to skip
+#' @param depth2 depth filter applied to the fine grid pass; FALSE to skip
+#' @param period1 time period for the coarse grid (e.g. "30 minutes")
+#' @param period2 time period for the fine grid (e.g. "4 minutes")
 #' @export
 #' @return see help(max_light_delta) for relevant details
 #' @importFrom stats splinefun

@@ -3,7 +3,6 @@
 #' Click on the bottom-left and top-right corners of a box bounding the light you wish to erase
 #' This function is slow, please be patient.
 #' @param obs the data frame containing at minimum Date and Light data
-#' @param zlim the dynamic range of the plot
 #' @param offset an offset in hours used to centre night within the plot y-axis
 #' @param threshold ambient light threshold at which twilight is assumed to occur
 #' @export

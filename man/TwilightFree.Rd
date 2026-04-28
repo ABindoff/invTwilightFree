@@ -4,9 +4,18 @@
 \alias{TwilightFree}
 \title{Specify a model for forwards-backwards estimation}
 \usage{
-TwilightFree(df, alpha = c(1, 1/10), beta = c(1, 1/4), dt = NULL,
-  threshold = 5, zenith = 96, deployed.at = F, retrieved.at = F,
-  fixd = NULL, sst = NULL)
+TwilightFree(
+  df,
+  alpha = c(1, 1/10),
+  beta = c(1, 1/4),
+  dt = NULL,
+  threshold = 5,
+  zenith = 96,
+  deployed.at = FALSE,
+  retrieved.at = FALSE,
+  fixd = NULL,
+  sst = NULL
+)
 }
 \arguments{
 \item{df}{data.frame containing `Light`, `Date`, and optionally `Temp` data}

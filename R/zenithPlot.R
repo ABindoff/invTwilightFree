@@ -4,6 +4,7 @@
 #' @param gps data frame with Date, Lon, Lat columns at minimum
 #' @param zenith solar zenith angle estimated from data
 #' @param threshold numeric Light intensity at twilight
+#' @param offset offset in hours used to centre night within the plot y-axis
 #' @export
 #' @return plot of thresholded Light data with simulated zeniths highlighted
 zenithPlot <- function (x, gps, threshold = 0, zenith = 95, offset = 0){

@@ -22,8 +22,8 @@ TwilightFree <- function(df,
                          dt = NULL,
                          threshold = 5,
                          zenith = 96,
-                         deployed.at = F,
-                         retrieved.at = F,
+                         deployed.at = FALSE,
+                         retrieved.at = FALSE,
                          fixd = NULL,
                          sst = NULL){
   if(is.null(df$Temp)){ ## fix bug, needs a $Temp column even if it's NA
@@ -51,8 +51,8 @@ TwilightFree <- function(df,
   #  (NOAA OI SST -> Weekly and Monthly -> sst.wkmean.*)
   indices <- NA
   if(!is.null(sst)){
-    indices <<- .bincode(as.POSIXct(dmin), as.POSIXct(strptime(raster::getZ(sst), "%Y-%m-%d", "GMT"), "GMT"),
-                         right = FALSE)
+    indices <- .bincode(as.POSIXct(dmin), as.POSIXct(strptime(raster::getZ(sst), "%Y-%m-%d", "GMT"), "GMT"),
+                        right = FALSE)
   }
 
 
@@ -117,6 +117,15 @@ TwilightFree <- function(df,
     spd <- pmax.int(SGAT::gcDist(x1, x2), 1e-06) / dt[k]
     dgamma(spd, beta[1L], beta[2L], log = TRUE)
   }
+  logp0 <- function(k, x, slices) {
+    x[, 1] <- x[, 1] %% 360
+    tt <- median(slices[[k]]$Temp, na.rm = TRUE)
+    if (is.na(tt)) {
+      0
+    } else {
+      dnorm(tt, raster::extract(sst[[indices[k]]], x), 2, log = TRUE)
+    }
+  }
   list(
     logpk = logpk,
     logbk = logbk,
@@ -129,14 +138,3 @@ TwilightFree <- function(df,
   )
 }
 
-
-#' calculate SST component of log-posterior in TwilightFree model
-logp0 <- function(k, x, slices) {
-  x[, 1] <- x[, 1] %% 360
-  tt <- median(slices[[k]]$Temp, na.rm = TRUE)
-  if (is.na(tt)) {
-    0
-  } else {
-    dnorm(tt, raster::extract(sst[[indices[k]]], x), 2, log = T)
-  }
-}

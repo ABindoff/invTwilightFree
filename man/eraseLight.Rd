@@ -12,8 +12,6 @@ eraseLight(obs, offset = 0, threshold = 5)
 \item{offset}{an offset in hours used to centre night within the plot y-axis}
 
 \item{threshold}{ambient light threshold at which twilight is assumed to occur}
-
-\item{zlim}{the dynamic range of the plot}
 }
 \value{
 data frame with edited Light data

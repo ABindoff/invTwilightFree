@@ -19,7 +19,7 @@ library(BAStag)
 library(raster)
 library(readr)
 library(TwilightFree)
-library(maptools)
+#library(maptools)
 
 ```
 
@@ -139,6 +139,10 @@ Pass the `TwilightFree` model object to `SGAT::essie` which calculates the poste
 ```{r}
 # fit the model using the grid from `makeGrid`
 fit <- SGAT::essie(model,grid,epsilon1=1.0E-4, epsilon2 = 1E-4)
+
+# EXPERIMENTAL: slightly faster with essierust package
+#fit <- essierust::essie(model,grid,epsilon1=1.0E-4, epsilon2 = 1E-4)
+
 ```
 
 `trip()` will return the locations from the fitted `essie` object, it's a good idea to save these to a file. `TwilightFree` offers a basic plotting function `drawTracks` which will plot the track, and optionally another track (say, from a GPS tag). See `? drawTracks` for documentation.  

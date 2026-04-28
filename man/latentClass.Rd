@@ -8,6 +8,10 @@ latentClass(d, nstates = 3L, verbose = TRUE)
 }
 \arguments{
 \item{d}{data frame with Light, Date, delta columns at minimum}
+
+\item{nstates}{number of latent states for the mixture model}
+
+\item{verbose}{if TRUE, plot the classified states}
 }
 \value{
 data frame with predicted day and night states in `state` column

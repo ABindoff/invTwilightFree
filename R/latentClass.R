@@ -1,6 +1,8 @@
 #' Fit latent class mixture model to quickly classify day and night states
 #'
 #' @param d data frame with Light, Date, delta columns at minimum
+#' @param nstates number of latent states for the mixture model
+#' @param verbose if TRUE, plot the classified states
 #' @export
 #' @import mclust
 #' @importFrom magrittr %>%

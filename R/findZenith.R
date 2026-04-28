@@ -1,6 +1,11 @@
 #' Find zenith angles from assumed threshold and locations
 #'
 #' @param d data frame with Light, Date columns at minimum
+#' @param day a date as a POSIXct or numeric (seconds since epoch)
+#' @param lon longitude of assumed location
+#' @param lat latitude of assumed location
+#' @param offset offset in hours used to centre night within the plot y-axis
+#' @param threshold ambient light threshold at which twilight is assumed to occur
 #' @export
 #' @return numeric zenith angle
 findZenith <- function(d, day, lon, lat, offset = 0, threshold = 5){

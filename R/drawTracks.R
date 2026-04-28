@@ -1,13 +1,13 @@
 #' Plot tracks with map
 #' @param gls a trip object returned from `trip()` with `Lon` and `Lat` columns in time order at minimum
 #' @param gps optional data.frame of reference data with `Lon` and `Lat` columns in time order
-#' @param col line colour for trip
-#' @param gps.col line colour for gps
+#' @param line.col line colour for trip
 #' @param point.cols optional gradient colours for points, NULL if points not required
 #' @param main optional title
 #' @param pacific TRUE if map uses Pacific-centred co-ordinates
 #' @export
-#' @import maptools
+#' @importFrom rnaturalearth ne_countries
+#' @importFrom sf st_shift_longitude st_geometry
 #' @import polyclip
 #' @importFrom viridisLite viridis
 #' @importFrom graphics abline par points
@@ -20,12 +20,12 @@ drawTracks <- function(gls,
                        pacific = F){
   xlm <- range(c(gls$Lon, gps$Lon))
   ylm <- range(c(gls$Lat, gps$Lat))
-  data(wrld_simpl, package = "maptools", envir = environment())
+  wrld_simpl <- rnaturalearth::ne_countries(scale = "small", returnclass = "sf")
 
   if(pacific){
-    wrld_simpl <- nowrapRecenter(wrld_simpl, avoidGEOS = TRUE)}
-  plot(wrld_simpl,xlim=xlm,ylim=ylm,
-       col="grey90",border="grey80", main = main, axes = T)
+    wrld_simpl <- sf::st_shift_longitude(wrld_simpl)}
+  plot(sf::st_geometry(wrld_simpl), xlim=xlm, ylim=ylm,
+       col="grey90", border="grey80", main = main, axes = T)
   xlm <- par()$usr[1:2]
   ylm <- par()$usr[3:4]
   border <- cbind(c(xlm[1], xlm[2], xlm[2], xlm[1], xlm[1]),

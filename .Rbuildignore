@@ -1,3 +1,6 @@
 ^.*\.Rproj$
 ^\.Rproj\.user$
 ^tutorials$
+^\.positai$
+^\.claude$
+^LICENSE\.md$

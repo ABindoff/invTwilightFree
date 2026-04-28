@@ -14,6 +14,8 @@ missingPlot(x, fit = NULL, threshold = 5, fixd = NULL, offset = 0)
 \item{threshold}{threshold for twilight}
 
 \item{fixd}{data frame with Date, Lon, Lat of fixed locations}
+
+\item{offset}{offset in hours used to centre night within the plot y-axis}
 }
 \value{
 ts plot

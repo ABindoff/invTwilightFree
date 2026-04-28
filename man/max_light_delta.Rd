@@ -4,8 +4,13 @@
 \alias{max_light_delta}
 \title{Find max light in period and smooth light observations}
 \usage{
-max_light_delta(d, depth = FALSE, period = "6 minutes",
-  smooth.delta = 6, smooth.light = 3)
+max_light_delta(
+  d,
+  depth = FALSE,
+  period = "6 minutes",
+  smooth.delta = 6,
+  smooth.light = 3
+)
 }
 \arguments{
 \item{d}{data frame with Light, Date columns at minimum}

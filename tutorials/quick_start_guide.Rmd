@@ -29,7 +29,7 @@ library(raster)
 ```
 
   
-This function constructs and returns a model which we will fit later using a forward-backward algorith. It takes a number of necessary parameters and you need to know something about them to use this method successfully, so we will go through them briefly here.
+This function constructs and returns a model which we will fit later using a forward-backward algorithm. It takes a number of necessary parameters and you need to know something about them to use this method successfully, so we will go through them briefly here.
 
 `df` is a data.frame of light and date-time observations (at a minimum). It may also contain sea surface temperature observations and other data which will be ignored. The important thing is that it has a column named `Light` and another column named `Date`.  
 The rows of the Light column are the light observations. There are very few restrictions on this but some tags store observations on a log scale and may need to be rescaled in order to determine a good threshold (more on this later). The rows of the Date column are the date and time data that tell us precisely when the observation occurred. It is crucial that these are in GMT or UTC time, and they need to be in POSIXct "%Y-%m-%d %H:%M:%S" format, which means a four digit year, two digit month and two digit day separated with a dash `-`, followed by hours, minutes, seconds separated with a colon `:`.  
@@ -127,7 +127,8 @@ Now the forward-backward algorithm has everything it needs to fit the model - a 
 
 ```{r fit}
 # fit the model using the forward-backward algorithm, SGAT::essie
-fit <- SGAT::essie(model,grid,epsilon1=1.0E-4, epsilon2 = 1E-6)
+fit0 <- SGAT::essie(model,grid,epsilon1=1.0E-4, epsilon2 = 1E-6)
+fit <- essierust::essie(model,grid,epsilon1=1.0E-4, epsilon2 = 1E-6)
 ```
 
 Let's have a look at the track - but first we need a function to turn the fitted object into a track, and another to plot it nicely.  

@@ -4,6 +4,7 @@
 #' @param fit a fitted model returned by SGAT::Essie
 #' @param threshold threshold for twilight
 #' @param fixd data frame with Date, Lon, Lat of fixed locations
+#' @param offset offset in hours used to centre night within the plot y-axis
 #' @export
 #' @importFrom lubridate floor_date as_date
 #' @importFrom BAStag lightImage
