@@ -1,0 +1,60 @@
+TARGET = $(subst 64,x86_64,$(subst 32,i686,$(WIN)))-pc-windows-gnu
+
+TARGET_DIR = ./rust/target
+LIBDIR = $(TARGET_DIR)/$(TARGET)/@LIBDIR@
+STATLIB = $(LIBDIR)/libinvtwilightfree.a
+PKG_LIBS = -L$(LIBDIR) -linvtwilightfree -lws2_32 -ladvapi32 -luserenv -lbcrypt -lntdll
+
+all: $(SHLIB) rust_clean
+
+.PHONY: $(STATLIB)
+
+$(SHLIB): $(STATLIB)
+
+CARGOTMP = $(CURDIR)/.cargo
+VENDOR_DIR = vendor
+
+$(STATLIB):
+	mkdir -p $(TARGET_DIR)/libgcc_mock
+	touch $(TARGET_DIR)/libgcc_mock/empty.c
+	gcc -c $(TARGET_DIR)/libgcc_mock/empty.c -o $(TARGET_DIR)/libgcc_mock/empty.o
+	rm -f $(TARGET_DIR)/libgcc_mock/libgcc_eh.a
+	ar rcs $(TARGET_DIR)/libgcc_mock/libgcc_eh.a $(TARGET_DIR)/libgcc_mock/empty.o
+
+  # If a vendor directory exists, it is used for offline compilation. Otherwise if
+  # vendor.tar.xz exists, it is unzipped and used for offline compilation.
+	if [ -d ./vendor ]; then \
+		echo "=== Using offline vendor directory ==="; \
+		mkdir -p "$(CARGOTMP)" && \
+		cp rust/vendor-config.toml "$(CARGOTMP)/config.toml"; \
+	elif [ -f ./rust/vendor.tar.xz ]; then \
+		echo "=== Using offline vendor tarball ==="; \
+		tar xf rust/vendor.tar.xz && \
+		mkdir -p "$(CARGOTMP)" && \
+		cp rust/vendor-config.toml "$(CARGOTMP)/config.toml"; \
+	fi
+
+	# Ensure ld finds the mock libgcc_eh.a regardless of its working directory
+	cp $(TARGET_DIR)/libgcc_mock/libgcc_eh.a . || true
+	cp $(TARGET_DIR)/libgcc_mock/libgcc_eh.a ./rust/ || true
+
+	# Build the project using Cargo with additional flags
+	export CARGO_HOME="$(CARGOTMP)" && \
+	export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=gcc && \
+	export LIBRARY_PATH="$(LIBRARY_PATH);$(TARGET_DIR)/libgcc_mock" && \
+	RUSTFLAGS="$(RUSTFLAGS) --print=native-static-libs -C link-arg=-L. -C link-arg=-L./rust -C link-arg=-L$(TARGET_DIR)/libgcc_mock" cargo build @CRAN_FLAGS@ --target=$(TARGET) --lib @PROFILE@ --manifest-path=rust/Cargo.toml --target-dir=$(TARGET_DIR)
+
+	# Generate wrappers
+	export CARGO_HOME="$(CARGOTMP)" && \
+	export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=gcc && \
+	export PATH="$(PATH):$(HOME)/.cargo/bin" && \
+	RUSTFLAGS="$(RUSTFLAGS) --print=native-static-libs -C link-arg=-L. -C link-arg=-L./rust -C link-arg=-L$(TARGET_DIR)/libgcc_mock" cargo run @CRAN_FLAGS@ --bin document --target $(TARGET) --manifest-path=./rust/Cargo.toml --target-dir $(TARGET_DIR)
+
+	# Always clean up CARGOTMP
+	rm -Rf "$(CARGOTMP)";
+
+rust_clean: $(SHLIB)
+	rm -Rf $(CARGOTMP) $(VENDOR_DIR) @CLEAN_TARGET@
+
+clean:
+	rm -Rf $(SHLIB) $(STATLIB) $(OBJECTS) $(TARGET_DIR) $(VENDOR_DIR)

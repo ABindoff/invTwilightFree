@@ -1,0 +1,249 @@
+---
+title: "Handling Difficult Scenarios with invTwilightFree"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Handling Difficult Scenarios with invTwilightFree}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 10,
+  fig.height = 7,
+  out.width = "100%"
+)
+```
+
+## Introduction
+
+The `invTwilightFree` package completely inverts traditional geolocation tracking. By modeling the likelihood of the continuous light curve rather than discrete twilight events, we can resolve tracks that were previously impossible to reconstruct.
+
+In this vignette, we evaluate the performance of `invTwilightFree` against several simulated "ground truth" datasets to demonstrate both its accuracy and how it gracefully handles periods where solar information is absent.
+
+```{r setup}
+library(invTwilightFree)
+library(ggplot2)
+
+# Helper function for error metrics (Great Circle distance in km)
+get_dist <- function(lon1, lat1, lon2, lat2) {
+  rad <- pi/180
+  a1 <- lat1 * rad; a2 <- lat2 * rad
+  b1 <- lon1 * rad; b2 <- lon2 * rad
+  dlon <- b2 - b1
+  # pmin(1, ...) prevents floating point precision NaN errors
+  acos(pmin(1, sin(a1)*sin(a2) + cos(a1)*cos(a2)*cos(dlon))) * 6371.0
+}
+
+calc_rmse <- function(fit, truth) {
+  # Interpolate true locations to match the filter knots
+  true_lat_interp <- approx(as.numeric(truth$time), truth$true_lat, xout = fit$knot_times)$y
+  true_lon_interp <- approx(as.numeric(truth$time), truth$true_lon, xout = fit$knot_times)$y
+  
+  errors <- get_dist(fit$lon, fit$lat, true_lon_interp, true_lat_interp)
+  rmse <- sqrt(mean(errors^2, na.rm = TRUE))
+  hdi_95 <- quantile(errors, c(0.025, 0.975), na.rm = TRUE)
+  
+  cat(sprintf("RMSE: %.2f km\n", rmse))
+  cat(sprintf("95%% HDI: [%.2f, %.2f] km\n", hdi_95[1], hdi_95[2]))
+  return(invisible(errors))
+}
+
+# Load test datasets
+data(sim_short)
+data(sim_polar)
+data(sim_equinox)
+data(sim_long)
+```
+
+## 1. Visualizing Raw Sensor Data (Light Image)
+
+Before fitting a track, we can visualize the raw light data using a "Light Image" (similar to `BAStag::LightImage`). This shows the time of day on the vertical axis and the date on the horizontal axis.
+
+```{r image_plot}
+# Create a dummy object to use the S3 plot method for raw data
+dummy <- list(obs_times = as.numeric(sim_long$time), obs_light = sim_long$light)
+class(dummy) <- "TwilightFreeTrack"
+plot(dummy, type = "image")
+```
+
+The diagonal lines represent sunrise and sunset. Notice the large vertical bars of 24-hour daylight in the Alaskan summer.
+
+## 2. Baseline Accuracy: Standard Track
+
+When solar information is unambiguous, `invTwilightFree` is highly accurate. Here we fit a standard 14-day track.
+
+```{r short}
+fit_short <- TwilightFreeSMC(
+  date_time = sim_short$time,
+  light = sim_short$light,
+  start_lat = sim_short$true_lat[1],
+  start_lon = sim_short$true_lon[1],
+  end_lat = sim_short$true_lat[nrow(sim_short)],
+  end_lon = sim_short$true_lon[nrow(sim_short)],
+  method = "guided"
+)
+
+plot(fit_short, type = "track")
+err_short <- calc_rmse(fit_short, sim_short)
+```
+
+
+## 3. The Equinox Challenge (Interpolation over Blind Spots)
+
+At the equinox, day length is 12 hours everywhere on Earth, meaning the light curve contains **zero latitudinal information**. Traditional threshold methods often result in tracks that randomly jump thousands of kilometers between the North and South poles.
+
+`invTwilightFree` resolves this using a **Guided Brownian Bridge**. When data is absent, it relies on the physical constraints of the deployment and retrieval locations to draw the most statistically probable path.
+
+```{r equinox}
+fit_equinox <- TwilightFreeSMC(
+  date_time = sim_equinox$time,
+  light = sim_equinox$light,
+  start_lat = sim_equinox$true_lat[1],
+  start_lon = sim_equinox$true_lon[1],
+  end_lat = sim_equinox$true_lat[nrow(sim_equinox)],
+  end_lon = sim_equinox$true_lon[nrow(sim_equinox)],
+  method = "guided"
+)
+
+plot(fit_equinox, type = "track")
+err_equinox <- calc_rmse(fit_equinox, sim_equinox)
+```
+
+**Why is the RMSE higher here?** In this specific simulation, the animal sprinted 40 degrees south in the first 10 days, and then slowed down to travel 20 degrees over the next 20 days. Because the light provided no latitudinal data during the equinox, the Brownian Bridge correctly assumed a constant average velocity (a straight line across the 30 days). The ~1250km RMSE is exactly equal to the mathematical difference between a sprint-and-stop path and a constant-velocity path. The model successfully prevented the track from breaking apart, interpolating smoothly across the "blind spot".
+
+## 4. Polar Circles and Midnight Sun
+
+In the polar summer, the sun never sets. Threshold methods fail because there are no discrete "twilights." `invTwilightFree` uses the continuous slope of the light intensity as the sun circles the horizon to extract spatial information.
+
+```{r polar}
+fit_polar <- TwilightFreeSMC(
+  date_time = sim_polar$time,
+  light = sim_polar$light,
+  start_lat = sim_polar$true_lat[1],
+  start_lon = sim_polar$true_lon[1],
+  end_lat = sim_polar$true_lat[nrow(sim_polar)],
+  end_lon = sim_polar$true_lon[nrow(sim_polar)],
+  method = "guided"
+)
+
+plot(fit_polar, type = "track")
+err_polar <- calc_rmse(fit_polar, sim_polar)
+```
+
+## 5. Anomaly Detection (Spike-and-Slab)
+
+The 12-month `sim_long` track includes randomized noise and fully censored blocks to simulate diving or sensor shading. The model automatically flags these as anomalies via the "slab" density, preventing catastrophic track failures.
+
+```{r long}
+fit_long <- TwilightFreeSMC(
+  date_time = sim_long$time,
+  light = sim_long$light,
+  start_lat = sim_long$true_lat[1],
+  start_lon = sim_long$true_lon[1],
+  end_lat = sim_long$true_lat[nrow(sim_long)],
+  end_lon = sim_long$true_lon[nrow(sim_long)],
+  method = "guided"
+)
+
+plot(fit_long, type = "diagnostics")
+err_long <- calc_rmse(fit_long, sim_long)
+```
+
+Observations with a high **P(Anomaly)** (orange bars) are effectively down-weighted in the location update, allowing the model to bridge periods of poor data quality accurately.
+
+## 6. Artificial Light at Night (ALAN)
+
+Traditional threshold methods often fail completely when exposed to artificial light at night (ALAN), such as from a passing ship or urban streetlights, because they interpret the spike as a genuine sunrise or sunset. `invTwilightFree` deals with this naturally via the continuous likelihood model.
+
+Here, we inject an intense, anomalous 3-hour light spike at midnight into the short track to simulate a passing ship:
+
+```{r alan}
+# Create a dataset with Artificial Light at Night
+sim_alan <- sim_short
+# Find the middle of the longest continuous night
+rl <- rle(sim_alan$light == 0)
+longest_night_block <- which.max(rl$lengths * rl$values)
+start_idx <- sum(rl$lengths[seq_len(longest_night_block - 1)]) + 1
+midnight_idx <- start_idx + rl$lengths[longest_night_block] %/% 2
+# Inject artificial light for 3 hours around midnight
+alan_window <- (midnight_idx - 9):(midnight_idx + 9)
+sim_alan$light[alan_window] <- 50 
+
+# Visualize the artificial light spike
+dummy_alan <- list(obs_times = as.numeric(sim_alan$time), obs_light = sim_alan$light)
+class(dummy_alan) <- "TwilightFreeTrack"
+plot(dummy_alan, type = "image")
+```
+
+```{r}
+
+fit_alan_ffbs <- TwilightFreeSMC(
+  date_time = sim_alan$time,
+  light = sim_alan$light,
+  start_lat = sim_alan$true_lat[1],
+  start_lon = sim_alan$true_lon[1],
+  end_lat = sim_alan$true_lat[nrow(sim_alan)],
+  end_lon = sim_alan$true_lon[nrow(sim_alan)],
+  method = "ffbs"
+)
+
+# The new 3-panel diagnostic plot clearly isolates the ALAN event
+plot(fit_alan_ffbs, type = "diagnostics")
+
+
+```
+
+The top panel highlights the anomalous light in red, while the bottom panel shows that the spike-and-slab model correctly assigned a `P(Anomaly) > 0.9` to the event, preventing it from corrupting the location estimate.
+
+Comparing the FFBS method vs Guided Brownian method:  
+
+```{r comparison}
+# Time the FFBS fit (O(K * N^2))
+t_ffbs <- system.time({
+  fit_alan_ffbs <- TwilightFreeSMC(
+    date_time = sim_alan$time,
+    light = sim_alan$light,
+    start_lat = sim_alan$true_lat[1],
+    start_lon = sim_alan$true_lon[1],
+    end_lat = sim_alan$true_lat[nrow(sim_alan)],
+    end_lon = sim_alan$true_lon[nrow(sim_alan)],
+    method = "ffbs",
+    n_particles = 500
+  )
+})
+
+# Time the Guided fit (O(K * N))
+t_guided <- system.time({
+  fit_alan_guided <- TwilightFreeSMC(
+    date_time = sim_alan$time,
+    light = sim_alan$light,
+    start_lat = sim_alan$true_lat[1],
+    start_lon = sim_alan$true_lon[1],
+    end_lat = sim_alan$true_lat[nrow(sim_alan)],
+    end_lon = sim_alan$true_lon[nrow(sim_alan)],
+    method = "guided",
+    n_particles = 500
+  )
+})
+
+# Compare Accuracy
+rmse_ffbs <- calc_rmse(fit_alan_ffbs, sim_alan)
+rmse_guided <- calc_rmse(fit_alan_guided, sim_alan)
+
+# Summary Table
+results <- data.frame(
+  Method = c("FFBS", "Guided Brownian"),
+  Complexity = c("O(K * N^2)", "O(K * N)"),
+  Time_sec = c(t_ffbs["elapsed"], t_guided["elapsed"]),
+  RMSE_km = c(sqrt(mean(rmse_ffbs^2, na.rm=T)), sqrt(mean(rmse_guided^2, na.rm=T)))
+)
+knitr::kable(results, digits = 2)
+```
+
+### Which method should you use?
+
+*   **FFBS** is the "gold standard" for accuracy because it uses information from the entire track to smooth every position. However, it is significantly slower ($O(N^2)$ with respect to particle count). It is ideal for short-to-medium tracks where precision is paramount.
+*   **Guided Brownian Bridge** is extremely fast and efficient ($O(N)$), making it the only practical choice for multi-year tracks or datasets with tens of thousands of particles. It maintains high accuracy by mathematically "pulling" the filter towards the known end-point, effectively preventing track drift even when solar information is absent.

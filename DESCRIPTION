@@ -1,4 +1,4 @@
-Package: TwilightFree
+Package: invTwilightFree
 Type: Package
 Title: Reconstruct animal tracks from GLS tag data
 Version: 0.1.1
@@ -10,9 +10,11 @@ Encoding: UTF-8
 LazyData: true
 RoxygenNote: 7.3.3
 Imports: 
-    SGAT,
-    rnaturalearth,
+    ggplot2,
     sf,
+    rnaturalearth,
+    gridExtra,
+    SGAT,
     polyclip,
     viridisLite,
     BAStag,
@@ -23,7 +25,13 @@ Imports:
     e1071,
     raster
 Depends: 
+    R (>= 4.2),
     sp
 Suggests:
+    knitr,
+    rmarkdown,
     rnaturalearthdata
 Remotes: SWotherspoon/SGAT, SWotherspoon/BAStag
+Config/rextendr/version: 0.5.0
+SystemRequirements: Cargo (Rust's package manager), rustc >= 1.65.0, xz
+VignetteBuilder: knitr
