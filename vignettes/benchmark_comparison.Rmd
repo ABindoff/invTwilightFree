@@ -219,9 +219,9 @@ time_flightr <- system.time({
   fit_flightr <- FLightR::run.particle.filter(prerun, threads = 1, nParticles = 25000, plot = FALSE)
   
   # Extract locations from the results object
-  # (find.times.distribution requires a Spatial.Index, so we extract from quantiles instead)
-  flightr_lon <- fit_flightr$Results$quantiles[1, 1, ] # Median Longitude
-  flightr_lat <- fit_flightr$Results$quantiles[1, 2, ] # Median Latitude
+  flightr_lon <- fit_flightr$Results$Quantiles$Medianlon
+  flightr_lat <- fit_flightr$Results$Quantiles$Medianlat
+  flightr_time <- fit_flightr$Results$Quantiles$time
 })
 ```
 
@@ -279,8 +279,8 @@ bench_results <- data.frame(
   `Fit Time (min)` = c(
     round(time_inv_guided["elapsed"]/60, 2), 
     round(time_inv_ffbs["elapsed"]/60, 2), 
-    12.5, 
-    48.0
+    round(time_flightr["elapsed"]/60, 2), 
+    round(time_sgat["elapsed"]/60, 2)
   ),
   Complexity = c("O(K * N)", "O(K * N^2)", "O(K * N_grid)", "MCMC")
 )
@@ -295,20 +295,24 @@ knitr::kable(bench_results)
 true_lat_k <- approx(as.numeric(track$time), track$true_lat, xout = fit_inv_guided$knot_times)$y
 true_lon_k <- approx(as.numeric(track$time), track$true_lon, xout = fit_inv_guided$knot_times)$y
 
+# Interpolate truth to match SGAT and FLightR times
+true_lat_flightr <- approx(as.numeric(track$time), track$true_lat, xout = as.numeric(flightr_time))$y
+true_lon_flightr <- approx(as.numeric(track$time), track$true_lon, xout = as.numeric(flightr_time))$y
+
+true_lat_sgat <- approx(as.numeric(track$time), track$true_lat, xout = as.numeric(sgat_time))$y
+true_lon_sgat <- approx(as.numeric(track$time), track$true_lon, xout = as.numeric(sgat_time))$y
+
 # Calculate errors (Great Circle)
 err_guided <- get_dist(fit_inv_guided$lon, fit_inv_guided$lat, true_lon_interp, true_lat_interp)
 err_ffbs <- get_dist(fit_inv_ffbs$lon, fit_inv_ffbs$lat, true_lon_interp, true_lat_interp)
-
-# Generate representative errors for placeholders
-# (In a real run, these would come from the fitted objects)
-err_flightr <- abs(rnorm(length(err_guided), 45, 15))
-err_sgat <- abs(rnorm(length(err_guided), 38, 10))
+err_flightr <- get_dist(flightr_lon, flightr_lat, true_lon_flightr, true_lat_flightr)
+err_sgat <- get_dist(sgat_lon, sgat_lat, true_lon_sgat, true_lat_sgat)
 
 accuracy_metrics <- data.frame(
-  Method = c("invTF (Guided)", "invTF (FFBS)", "FLightR (Typical)", "SGAT (Typical)"),
-  `RMSE (km)` = c(sqrt(mean(err_guided^2)), sqrt(mean(err_ffbs^2)), sqrt(mean(err_flightr^2)), sqrt(mean(err_sgat^2))),
-  `Mean Lat Error (deg)` = c(mean(abs(fit_inv_guided$lat - true_lat_k)), mean(abs(fit_inv_ffbs$lat - true_lat_k)), 0.45, 0.38),
-  `Mean Lon Error (deg)` = c(mean(abs(fit_inv_guided$lon - true_lon_k)), mean(abs(fit_inv_ffbs$lon - true_lon_k)), 0.35, 0.32)
+  Method = c("invTF (Guided)", "invTF (FFBS)", "FLightR", "SGAT"),
+  `RMSE (km)` = c(sqrt(mean(err_guided^2)), sqrt(mean(err_ffbs^2)), sqrt(mean(err_flightr^2, na.rm=TRUE)), sqrt(mean(err_sgat^2, na.rm=TRUE))),
+  `Mean Lat Error (deg)` = c(mean(abs(fit_inv_guided$lat - true_lat_k)), mean(abs(fit_inv_ffbs$lat - true_lat_k)), mean(abs(flightr_lat - true_lat_flightr), na.rm=TRUE), mean(abs(sgat_lat - true_lat_sgat), na.rm=TRUE)),
+  `Mean Lon Error (deg)` = c(mean(abs(fit_inv_guided$lon - true_lon_k)), mean(abs(fit_inv_ffbs$lon - true_lon_k)), mean(abs(flightr_lon - true_lon_flightr), na.rm=TRUE), mean(abs(sgat_lon - true_lon_sgat), na.rm=TRUE))
 )
 
 knitr::kable(accuracy_metrics, digits = 2)
@@ -317,21 +321,11 @@ knitr::kable(accuracy_metrics, digits = 2)
 ## 4. Visual Comparison: Error Distribution
 
 ```{r plots}
-df_err <- data.frame(
-  Time = rep(fit_inv_guided$knot_times, 4),
-  Lat_Error = c(
-    fit_inv_guided$lat - true_lat_k,
-    fit_inv_ffbs$lat - true_lat_k,
-    rnorm(length(true_lat_k), 0, 0.45),
-    rnorm(length(true_lat_k), 0, 0.38)
-  ),
-  Lon_Error = c(
-    fit_inv_guided$lon - true_lon_k,
-    fit_inv_ffbs$lat - true_lat_k, # typo in my thought? no, use true_lon_k
-    rnorm(length(true_lat_k), 0, 0.35),
-    rnorm(length(true_lat_k), 0, 0.32)
-  ),
-  Method = rep(c("invTF (Guided)", "invTF (FFBS)", "FLightR", "SGAT"), each = length(true_lat_k))
+df_err <- rbind(
+  data.frame(Time = fit_inv_guided$knot_times, Lat_Error = fit_inv_guided$lat - true_lat_k, Lon_Error = fit_inv_guided$lon - true_lon_k, Method = "invTF (Guided)"),
+  data.frame(Time = fit_inv_ffbs$knot_times, Lat_Error = fit_inv_ffbs$lat - true_lat_k, Lon_Error = fit_inv_ffbs$lon - true_lon_k, Method = "invTF (FFBS)"),
+  data.frame(Time = flightr_time, Lat_Error = flightr_lat - true_lat_flightr, Lon_Error = flightr_lon - true_lon_flightr, Method = "FLightR"),
+  data.frame(Time = sgat_time, Lat_Error = sgat_lat - true_lat_sgat, Lon_Error = sgat_lon - true_lon_sgat, Method = "SGAT")
 )
 
 p1 <- ggplot(df_err, aes(x = Time, y = Lat_Error, color = Method)) +
