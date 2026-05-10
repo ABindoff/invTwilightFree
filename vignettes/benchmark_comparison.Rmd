@@ -158,46 +158,36 @@ FLightR uses a particle filter on a spatial grid. To run it, we need to convert 
 
 ```{r fit_flightr, message=FALSE, warning=FALSE, results='hide'}
 time_flightr <- system.time({
-  tryCatch({
-    # FLightR needs a specific dataframe structure
-    flightr_data <- data.frame(
-      time = track$time,
-      light = track$light
-    )
-    # Write to a temporary file to use get.tags.data
-    tmp_file <- tempfile(fileext = ".csv")
-    write.csv(flightr_data, tmp_file, row.names = FALSE)
-    
-    # We use a try block as FLightR can be sensitive to simulated calibration data
-    proc_data <- try(FLightR::get.tags.data(tmp_file), silent = TRUE)
-    
-    if(!inherits(proc_data, "try-error")) {
-      # Setup spatial grid (global, coarse for speed)
-      Grid <- FLightR::make.grid(left = 70, right = 180, bottom = -80, top = 0, distance.from.land.allowed.to.use = c(-Inf, Inf))
-      
-      # FLightR Calibration (assuming first 3 days are known)
-      calib_flightr <- FLightR::make.calibration(proc_data, known.pos = c(track$true_lon[1], track$true_lat[1]), 
-                                                 calibration.periods = c(track$time[1], track$time[1] + 3*86400))
-      
-      # Prerun object
-      prerun <- FLightR::make.prerun.object(proc_data, Grid, start = c(track$true_lon[1], track$true_lat[1]), 
-                                            Calibration = calib_flightr)
-      
-      # Run Particle Filter
-      fit_flightr <- FLightR::run.particle.filter(prerun, threads = 1, nParticles = 1e4, plot = FALSE)
-      
-      # Extract locations
-      res_flightr <- FLightR::find.times.distribution(fit_flightr)
-      flightr_lon <- res_flightr$Longitude
-      flightr_lat <- res_flightr$Latitude
-    } else {
-      stop("FLightR data import failed.")
-    }
-  }, error = function(e) {
-    warning("FLightR fit failed: ", e$message)
-    flightr_lon <<- rep(NA, length(fit_inv_guided$knot_times))
-    flightr_lat <<- rep(NA, length(fit_inv_guided$knot_times))
-  })
+  # FLightR needs a specific dataframe structure
+  flightr_data <- data.frame(
+    time = track$time,
+    light = track$light
+  )
+  # Write to a temporary file to use get.tags.data
+  tmp_file <- tempfile(fileext = ".csv")
+  write.csv(flightr_data, tmp_file, row.names = FALSE)
+  
+  # FLightR data processing
+  proc_data <- FLightR::get.tags.data(tmp_file)
+  
+  # Setup spatial grid (global, coarse for speed)
+  Grid <- FLightR::make.grid(left = 70, right = 180, bottom = -80, top = 0, distance.from.land.allowed.to.use = c(-Inf, Inf))
+  
+  # FLightR Calibration (assuming first 3 days are known)
+  calib_flightr <- FLightR::make.calibration(proc_data, known.pos = c(track$true_lon[1], track$true_lat[1]), 
+                                             calibration.periods = c(track$time[1], track$time[1] + 3*86400))
+  
+  # Prerun object
+  prerun <- FLightR::make.prerun.object(proc_data, Grid, start = c(track$true_lon[1], track$true_lat[1]), 
+                                        Calibration = calib_flightr)
+  
+  # Run Particle Filter
+  fit_flightr <- FLightR::run.particle.filter(prerun, threads = 1, nParticles = 1e4, plot = FALSE)
+  
+  # Extract locations
+  res_flightr <- FLightR::find.times.distribution(fit_flightr)
+  flightr_lon <- res_flightr$Longitude
+  flightr_lat <- res_flightr$Latitude
 })
 ```
 
@@ -207,43 +197,32 @@ SGAT represents the "gold standard" but is notoriously slow. We construct a basi
 
 ```{r fit_sgat, message=FALSE, warning=FALSE, results='hide'}
 time_sgat <- system.time({
-  tryCatch({
-    if(inherits(twl, "data.frame") && nrow(twl) > 10) {
-      # 1. Initial Path
-      path <- TwGeos::thresholdPath(twl$Twilight, twl$Rise)
-      x0 <- path$x
-      z0 <- track$time[1:nrow(x0)] # Simplified intermediate times
-      
-      # 2. Movement Model (Brownian)
-      beta <- c(2, 2)
-      logp.x <- function(x) dnorm(x[2], 0, 90, log = TRUE) # Vague prior
-      logp.z <- function(t0, x0, t1, x1) {
-        dt <- as.numeric(t1) - as.numeric(t0)
-        SGAT::dlognorm(SGAT::gcDist(x0, x1), beta[1], beta[2], log = TRUE)
-      }
-      
-      # 3. Observation Model
-      model <- SGAT::thresholdModel(twl$Twilight, twl$Rise, twl.pt = "Solar",
-                                    alpha = calib[1:2], beta = calib[1:2],
-                                    logp.x = logp.x, logp.z = logp.z,
-                                    x0 = x0)
-      
-      # 4. MCMC (Short chain for benchmark purposes)
-      fit_sgat <- SGAT::est.mcmc(model, x0 = x0, iters = 1000, thin = 10)
-      
-      # Extract locations (mean of posterior)
-      sgat_lon <- apply(fit_sgat$x[,1,], 1, mean)
-      sgat_lat <- apply(fit_sgat$x[,2,], 1, mean)
-      sgat_time <- twl$Twilight
-    } else {
-      stop("Valid twilights not available for SGAT.")
-    }
-  }, error = function(e) {
-    warning("SGAT fit failed: ", e$message)
-    sgat_lon <<- rep(NA, length(fit_inv_guided$knot_times))
-    sgat_lat <<- rep(NA, length(fit_inv_guided$knot_times))
-    sgat_time <<- fit_inv_guided$knot_times
-  })
+  # 1. Initial Path
+  path <- TwGeos::thresholdPath(twl$Twilight, twl$Rise)
+  x0 <- path$x
+  z0 <- track$time[1:nrow(x0)] # Simplified intermediate times
+  
+  # 2. Movement Model (Brownian)
+  beta <- c(2, 2)
+  logp.x <- function(x) dnorm(x[2], 0, 90, log = TRUE) # Vague prior
+  logp.z <- function(t0, x0, t1, x1) {
+    dt <- as.numeric(t1) - as.numeric(t0)
+    SGAT::dlognorm(SGAT::gcDist(x0, x1), beta[1], beta[2], log = TRUE)
+  }
+  
+  # 3. Observation Model
+  model <- SGAT::thresholdModel(twl$Twilight, twl$Rise, twl.pt = "Solar",
+                                alpha = calib[1:2], beta = calib[1:2],
+                                logp.x = logp.x, logp.z = logp.z,
+                                x0 = x0)
+  
+  # 4. MCMC (Short chain for benchmark purposes)
+  fit_sgat <- SGAT::est.mcmc(model, x0 = x0, iters = 1000, thin = 10)
+  
+  # Extract locations (mean of posterior)
+  sgat_lon <- apply(fit_sgat$x[,1,], 1, mean)
+  sgat_lat <- apply(fit_sgat$x[,2,], 1, mean)
+  sgat_time <- twl$Twilight
 })
 ```
 
