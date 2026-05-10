@@ -260,9 +260,10 @@ time_sgat <- system.time({
   proposal <- SGAT::mvnorm(S = diag(c(0.2, 0.2)^2), n = nrow(x0))
   fit_sgat <- SGAT::stellaMetropolis(model, proposal, x0 = x0, iters = 1000, thin = 10)
   
-  # Extract locations (mean of posterior)
-  sgat_lon <- apply(fit_sgat$x[,1,], 1, mean)
-  sgat_lat <- apply(fit_sgat$x[,2,], 1, mean)
+  # Extract locations (mean of posterior from the first chain)
+  sgat_chain <- fit_sgat$x[[1]]
+  sgat_lon <- apply(sgat_chain[,1,], 1, mean)
+  sgat_lat <- apply(sgat_chain[,2,], 1, mean)
   sgat_time <- twl$Twilight
 })
 ```
