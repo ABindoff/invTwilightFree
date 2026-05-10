@@ -87,13 +87,13 @@ simulate_benchmark <- function(duration_days = 180) {
   
   light <- numeric(n_obs)
   for(i in 1:n_obs) {
-    # Calculate zenith and shift it to ensure positive deviations (observed > expected)
     z <- get_z(times[i], lons[i], lats[i])
-    # Shift z by -10 degrees to ensure crossing happens at high zenith (positive deviation)
-    l <- pmin(pmax(64 - 0.7 * (z - 10), 0), 64)
-    # Add significant background noise to avoid zero/identical deviations
+    # Realistic solar light curve: scales from 0 at zenith 96 to 64 at zenith 85
+    # slope = 64 / (96 - 85) = 5.818, intercept = 5.818 * 96 = 558.5
+    l <- pmin(pmax(558.5 - 5.818 * z, 0), 64)
+    # Add background noise
     l <- l + rnorm(1, 0, 0.5)
-    # Add random shading
+    # Add random shading (clouds/feathers etc.)
     if(runif(1) < 0.05) l <- pmax(0, l - runif(1, 10, 40))
     light[i] <- pmax(0, pmin(64, l))
   }
@@ -121,9 +121,7 @@ time_inv_guided <- system.time({
     end_lat = track$true_lat[nrow(track)],
     end_lon = track$true_lon[nrow(track)],
     method = "guided",
-    n_particles = 1000,
-    calibration = c(71, 0.7),
-    likelihood_params = c(0.05, 64, 0.5)
+    n_particles = 1000
   )
 })
 
@@ -137,9 +135,7 @@ time_inv_ffbs <- system.time({
     end_lat = track$true_lat[nrow(track)],
     end_lon = track$true_lon[nrow(track)],
     method = "ffbs",
-    n_particles = 300, # Fewer particles for FFBS to keep it under 15 mins
-    calibration = c(71, 0.7),
-    likelihood_params = c(0.05, 64, 0.5)
+    n_particles = 300 # Fewer particles for FFBS to keep it under 15 mins
   )
 })
 ```
