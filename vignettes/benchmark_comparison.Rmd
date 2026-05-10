@@ -232,9 +232,9 @@ SGAT represents the "gold standard" but is notoriously slow. We construct a basi
 ```{r fit_sgat, message=FALSE, warning=FALSE, results='hide'}
 time_sgat <- system.time({
   # 1. Initial Path
-  path <- TwGeos::thresholdPath(twl$Twilight, twl$Rise)
+  path <- SGAT::thresholdPath(twl$Twilight, twl$Rise)
   x0 <- path$x
-  z0 <- track$time[1:nrow(x0)] # Simplified intermediate times
+  z0 <- twl$Twilight # Use the actual twilight times for the path
   
   # 2. Movement Model (Brownian)
   beta <- c(2, 2)
