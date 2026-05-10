@@ -255,7 +255,9 @@ time_sgat <- system.time({
                                 x0 = x0, z0 = z0)
   
   # 4. MCMC (Short chain for benchmark purposes)
-  fit_sgat <- SGAT::est.mcmc(model, x0 = x0, iters = 1000, thin = 10)
+  # In this version of SGAT, the sampler is stellaMetropolis
+  proposal <- SGAT::mvnorm(S = diag(c(0.2, 0.2)^2), n = nrow(x0))
+  fit_sgat <- SGAT::stellaMetropolis(model, proposal, x0 = x0, iters = 1000, thin = 10)
   
   # Extract locations (mean of posterior)
   sgat_lon <- apply(fit_sgat$x[,1,], 1, mean)
