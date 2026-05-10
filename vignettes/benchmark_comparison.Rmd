@@ -121,7 +121,9 @@ time_inv_guided <- system.time({
     end_lat = track$true_lat[nrow(track)],
     end_lon = track$true_lon[nrow(track)],
     method = "guided",
-    n_particles = 1000
+    n_particles = 1000,
+    calibration = c(71, 0.7),
+    likelihood_params = c(0.05, 64, 0.5)
   )
 })
 
@@ -135,7 +137,9 @@ time_inv_ffbs <- system.time({
     end_lat = track$true_lat[nrow(track)],
     end_lon = track$true_lon[nrow(track)],
     method = "ffbs",
-    n_particles = 300 # Fewer particles for FFBS to keep it under 15 mins
+    n_particles = 300, # Fewer particles for FFBS to keep it under 15 mins
+    calibration = c(71, 0.7),
+    likelihood_params = c(0.05, 64, 0.5)
   )
 })
 ```
