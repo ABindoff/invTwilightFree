@@ -215,13 +215,13 @@ time_flightr <- system.time({
   prerun <- FLightR::make.prerun.object(proc_data, Grid, start = c(track$true_lon[1], track$true_lat[1]), 
                                         Calibration = calib_flightr)
   
-  # Run Particle Filter
-  fit_flightr <- FLightR::run.particle.filter(prerun, threads = 1, nParticles = 1e4, plot = FALSE)
+  # Run Particle Filter (increase particles to avoid 'particle death')
+  fit_flightr <- FLightR::run.particle.filter(prerun, threads = 1, nParticles = 25000, plot = FALSE)
   
-  # Extract locations
-  res_flightr <- FLightR::find.times.distribution(fit_flightr)
-  flightr_lon <- res_flightr$Longitude
-  flightr_lat <- res_flightr$Latitude
+  # Extract locations from the results object
+  # (find.times.distribution requires a Spatial.Index, so we extract from quantiles instead)
+  flightr_lon <- fit_flightr$Results$quantiles[1, 1, ] # Median Longitude
+  flightr_lat <- fit_flightr$Results$quantiles[1, 2, ] # Median Latitude
 })
 ```
 
