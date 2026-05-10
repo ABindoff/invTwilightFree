@@ -180,6 +180,7 @@ time_flightr <- system.time({
   proc_data <- FLightR::get.tags.data(tmp_file, 
                                       log.light.borders = c(0, 64),
                                       log.irrad.borders = c(-2, 3),
+                                      tag.saving = "max",
                                       measurement.period = 600)
   
   # Setup spatial grid (global, coarse for speed)
