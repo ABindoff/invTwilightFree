@@ -166,63 +166,74 @@ calib <- c(2.5, 0.8) # Typical log-normal location and scale parameters
 FLightR uses a particle filter on a spatial grid. To run it, we need to convert our simulated track into the format it expects (TAGS format).
 
 ```{r fit_flightr, message=FALSE, warning=FALSE, results='hide'}
-time_flightr <- system.time({
-  # FLightR requires a full TAGS format file
-  flightr_data <- data.frame(
-    datetime = format(track$time, "%Y-%m-%dT%H:%M:%SZ"),
-    light = track$light,
-    twilight = 0,
-    interp = FALSE,
-    excluded = FALSE
-  )
+if (file.exists("cache_flightr.rds")) {
+  cached <- readRDS("cache_flightr.rds")
+  fit_flightr <- cached$fit
+  time_flightr <- cached$time
   
-  # Populate twilights for FLightR
-  for (i in 1:nrow(twl)) {
-    idx <- which.min(abs(as.numeric(track$time) - as.numeric(twl$Twilight[i])))
-    flightr_data$twilight[idx] <- ifelse(twl$Rise[i], 1, 2)
-  }
-  
-  # Workaround for FLightR bug: if interp is entirely FALSE, lig.raw[-integer(0),] 
-  # returns an empty dataframe, causing read.table to fail downstream.
-  flightr_data$interp[1] <- TRUE 
-  
-  # Write to local file
-  tmp_file <- "benchmark_flightr_input.csv"
-  write.csv(flightr_data, tmp_file, row.names = FALSE, quote = FALSE)
-  
-  if(file.size(tmp_file) == 0) stop("Failed to write FLightR input file!")
-  
-  # FLightR data processing
-  proc_data <- FLightR::get.tags.data(tmp_file, 
-                                      log.light.borders = c(0, 64),
-                                      log.irrad.borders = c(-2, 3),
-                                      saves = "max",
-                                      measurement.period = 600)
-  
-  # Setup spatial grid (global, coarse for speed)
-  Grid <- FLightR::make.grid(left = 70, right = 180, bottom = -80, top = 0, distance.from.land.allowed.to.use = c(-Inf, Inf))
-  
-  # FLightR Calibration (assuming first 3 days are known)
-  calib_df <- data.frame(
-    calibration.start = track$time[1],
-    calibration.stop = track$time[1] + 3*86400,
-    lon = track$true_lon[1],
-    lat = track$true_lat[1]
-  )
-  calib_flightr <- FLightR::make.calibration(proc_data, Calibration.periods = calib_df)
-  
-  # Prerun object
-  prerun <- FLightR::make.prerun.object(proc_data, Grid, start = c(track$true_lon[1], track$true_lat[1]), 
-                                        Calibration = calib_flightr)
-  
-  # Run Particle Filter (increase particles to avoid 'particle death')
-  fit_flightr <- FLightR::run.particle.filter(prerun, threads = 1, nParticles = 25000, plot = FALSE)
-  
-  # Extract locations from the results object
   flightr_lon <- fit_flightr$Results$Quantiles$Medianlon
   flightr_lat <- fit_flightr$Results$Quantiles$Medianlat
   flightr_time <- fit_flightr$Results$Quantiles$time
-})
+} else {
+  time_flightr <- system.time({
+    # FLightR requires a full TAGS format file
+    flightr_data <- data.frame(
+      datetime = format(track$time, "%Y-%m-%dT%H:%M:%SZ"),
+      light = track$light,
+      twilight = 0,
+      interp = FALSE,
+      excluded = FALSE
+    )
+    
+    # Populate twilights for FLightR
+    for (i in 1:nrow(twl)) {
+      idx <- which.min(abs(as.numeric(track$time) - as.numeric(twl$Twilight[i])))
+      flightr_data$twilight[idx] <- ifelse(twl$Rise[i], 1, 2)
+    }
+    
+    # Workaround for FLightR bug: if interp is entirely FALSE, lig.raw[-integer(0),] 
+    # returns an empty dataframe, causing read.table to fail downstream.
+    flightr_data$interp[1] <- TRUE 
+    
+    # Write to local file
+    tmp_file <- "benchmark_flightr_input.csv"
+    write.csv(flightr_data, tmp_file, row.names = FALSE, quote = FALSE)
+    
+    if(file.size(tmp_file) == 0) stop("Failed to write FLightR input file!")
+    
+    # FLightR data processing
+    proc_data <- FLightR::get.tags.data(tmp_file, 
+                                        log.light.borders = c(0, 64),
+                                        log.irrad.borders = c(-2, 3),
+                                        saves = "max",
+                                        measurement.period = 600)
+    
+    # Setup spatial grid (global, coarse for speed)
+    Grid <- FLightR::make.grid(left = 70, right = 180, bottom = -80, top = 0, distance.from.land.allowed.to.use = c(-Inf, Inf))
+    
+    # FLightR Calibration (assuming first 3 days are known)
+    calib_df <- data.frame(
+      calibration.start = track$time[1],
+      calibration.stop = track$time[1] + 3*86400,
+      lon = track$true_lon[1],
+      lat = track$true_lat[1]
+    )
+    calib_flightr <- FLightR::make.calibration(proc_data, Calibration.periods = calib_df)
+    
+    # Prerun object
+    prerun <- FLightR::make.prerun.object(proc_data, Grid, start = c(track$true_lon[1], track$true_lat[1]), 
+                                          Calibration = calib_flightr)
+    
+    # Run Particle Filter (increase particles to avoid 'particle death')
+    fit_flightr <- FLightR::run.particle.filter(prerun, threads = 1, nParticles = 25000, plot = FALSE)
+    
+    # Extract locations from the results object
+    flightr_lon <- fit_flightr$Results$Quantiles$Medianlon
+    flightr_lat <- fit_flightr$Results$Quantiles$Medianlat
+    flightr_time <- fit_flightr$Results$Quantiles$time
+  })
+  saveRDS(list(fit = fit_flightr, time = time_flightr), "cache_flightr.rds")
+}
 ```
 
 ### SGAT (MCMC State-Space)
@@ -230,42 +241,54 @@ time_flightr <- system.time({
 SGAT represents the "gold standard" but is notoriously slow. We construct a basic threshold model and run a short MCMC chain.
 
 ```{r fit_sgat, message=FALSE, warning=FALSE, results='hide'}
-time_sgat <- system.time({
-  # 1. Initial Path
-  path <- SGAT::thresholdPath(twl$Twilight, twl$Rise)
-  x0 <- path$x
-  # Interpolate NAs in initial path to prevent MCMC crashes
-  if(any(is.na(x0[,2]))) {
-    x0[,2] <- approx(x = which(!is.na(x0[,2])), y = x0[!is.na(x0[,2]), 2], xout = 1:nrow(x0), rule = 2)$y
-  }
-  z0 <- twl$Twilight # Use the actual twilight times for the path
+if (file.exists("cache_sgat.rds")) {
+  cached <- readRDS("cache_sgat.rds")
+  fit_sgat <- cached$fit
+  time_sgat <- cached$time
   
-  # 2. Movement Model (Brownian)
-  beta <- c(2, 2)
-  logp.x <- function(x) dnorm(x[,2], 0, 90, log = TRUE) # Vague prior
-  
-  # 3. Observation Model
-  # SGAT expects alpha as a matrix (nrow = n_twilights, 2 columns)
-  # Using Normal model to prevent -Inf log-likelihoods on perfect initial paths
-  alpha_mat <- matrix(c(0, 15), nrow = nrow(twl), ncol = 2, byrow = TRUE)
-  # beta is for the movement model (speed gamma)
-  model <- SGAT::thresholdModel(twl$Twilight, twl$Rise, 
-                                twilight.model = "Normal",
-                                alpha = alpha_mat, beta = beta,
-                                logp.x = logp.x,
-                                x0 = x0, z0 = z0)
-  
-  # 4. MCMC (Short chain for benchmark purposes)
-  # In this version of SGAT, the sampler is stellaMetropolis
-  proposal <- SGAT::mvnorm(S = diag(c(0.2, 0.2)^2), n = nrow(x0))
-  fit_sgat <- SGAT::stellaMetropolis(model, proposal, x0 = x0, iters = 1000, thin = 10)
-  
-  # Extract locations (mean of posterior from the first chain)
   sgat_chain <- fit_sgat$x[[1]]
   sgat_lon <- apply(sgat_chain[,1,], 1, mean)
   sgat_lat <- apply(sgat_chain[,2,], 1, mean)
   sgat_time <- twl$Twilight
-})
+} else {
+  time_sgat <- system.time({
+    # 1. Initial Path
+    path <- SGAT::thresholdPath(twl$Twilight, twl$Rise)
+    x0 <- path$x
+    # Interpolate NAs in initial path to prevent MCMC crashes
+    if(any(is.na(x0[,2]))) {
+      x0[,2] <- approx(x = which(!is.na(x0[,2])), y = x0[!is.na(x0[,2]), 2], xout = 1:nrow(x0), rule = 2)$y
+    }
+    z0 <- twl$Twilight # Use the actual twilight times for the path
+    
+    # 2. Movement Model (Brownian)
+    beta <- c(2, 2)
+    logp.x <- function(x) dnorm(x[,2], 0, 90, log = TRUE) # Vague prior
+    
+    # 3. Observation Model
+    # SGAT expects alpha as a matrix (nrow = n_twilights, 2 columns)
+    # Using Normal model to prevent -Inf log-likelihoods on perfect initial paths
+    alpha_mat <- matrix(c(0, 15), nrow = nrow(twl), ncol = 2, byrow = TRUE)
+    # beta is for the movement model (speed gamma)
+    model <- SGAT::thresholdModel(twl$Twilight, twl$Rise, 
+                                  twilight.model = "Normal",
+                                  alpha = alpha_mat, beta = beta,
+                                  logp.x = logp.x,
+                                  x0 = x0, z0 = z0)
+    
+    # 4. MCMC (Short chain for benchmark purposes)
+    # In this version of SGAT, the sampler is stellaMetropolis
+    proposal <- SGAT::mvnorm(S = diag(c(0.2, 0.2)^2), n = nrow(x0))
+    fit_sgat <- SGAT::stellaMetropolis(model, proposal, x0 = x0, iters = 1000, thin = 10)
+    
+    # Extract locations (mean of posterior from the first chain)
+    sgat_chain <- fit_sgat$x[[1]]
+    sgat_lon <- apply(sgat_chain[,1,], 1, mean)
+    sgat_lat <- apply(sgat_chain[,2,], 1, mean)
+    sgat_time <- twl$Twilight
+  })
+  saveRDS(list(fit = fit_sgat, time = time_sgat), "cache_sgat.rds")
+}
 ```
 
 ## 3. Results Comparison
@@ -303,8 +326,8 @@ true_lat_sgat <- approx(as.numeric(track$time), track$true_lat, xout = as.numeri
 true_lon_sgat <- approx(as.numeric(track$time), track$true_lon, xout = as.numeric(sgat_time))$y
 
 # Calculate errors (Great Circle)
-err_guided <- get_dist(fit_inv_guided$lon, fit_inv_guided$lat, true_lon_interp, true_lat_interp)
-err_ffbs <- get_dist(fit_inv_ffbs$lon, fit_inv_ffbs$lat, true_lon_interp, true_lat_interp)
+err_guided <- get_dist(fit_inv_guided$lon, fit_inv_guided$lat, true_lon_k, true_lat_k)
+err_ffbs <- get_dist(fit_inv_ffbs$lon, fit_inv_ffbs$lat, true_lon_k, true_lat_k)
 err_flightr <- get_dist(flightr_lon, flightr_lat, true_lon_flightr, true_lat_flightr)
 err_sgat <- get_dist(sgat_lon, sgat_lat, true_lon_sgat, true_lat_sgat)
 
