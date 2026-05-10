@@ -234,15 +234,15 @@ time_sgat <- system.time({
   # 1. Initial Path
   path <- SGAT::thresholdPath(twl$Twilight, twl$Rise)
   x0 <- path$x
+  # Interpolate NAs in initial path to prevent MCMC crashes
+  if(any(is.na(x0[,2]))) {
+    x0[,2] <- approx(x = which(!is.na(x0[,2])), y = x0[!is.na(x0[,2]), 2], xout = 1:nrow(x0), rule = 2)$y
+  }
   z0 <- twl$Twilight # Use the actual twilight times for the path
   
   # 2. Movement Model (Brownian)
   beta <- c(2, 2)
-  logp.x <- function(x) dnorm(x[2], 0, 90, log = TRUE) # Vague prior
-  logp.z <- function(t0, x0, t1, x1) {
-    dt <- as.numeric(t1) - as.numeric(t0)
-    SGAT::dlognorm(SGAT::gcDist(x0, x1), beta[1], beta[2], log = TRUE)
-  }
+  logp.x <- function(x) dnorm(x[,2], 0, 90, log = TRUE) # Vague prior
   
   # 3. Observation Model
   # SGAT expects alpha as a matrix (nrow = n_twilights, 2 columns)
@@ -250,8 +250,8 @@ time_sgat <- system.time({
   # beta is for the movement model (speed gamma)
   model <- SGAT::thresholdModel(twl$Twilight, twl$Rise, 
                                 twilight.model = "LogNormal",
-                                alpha = alpha_mat, beta = c(2, 2),
-                                logp.x = logp.x, logp.z = logp.z,
+                                alpha = alpha_mat, beta = beta,
+                                logp.x = logp.x,
                                 x0 = x0, z0 = z0)
   
   # 4. MCMC (Short chain for benchmark purposes)
