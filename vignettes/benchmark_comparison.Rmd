@@ -87,11 +87,13 @@ simulate_benchmark <- function(duration_days = 180) {
   
   light <- numeric(n_obs)
   for(i in 1:n_obs) {
+    # Calculate zenith and shift it to ensure positive deviations (observed > expected)
     z <- get_z(times[i], lons[i], lats[i])
-    l <- pmin(pmax(64 - 0.7 * z, 0), 64)
-    # Add small background noise to avoid zero-deviation errors
-    l <- l + rnorm(1, 0, 0.1)
-    # Add random shading (but ensure it doesn't break the threshold)
+    # Shift z by -10 degrees to ensure crossing happens at high zenith (positive deviation)
+    l <- pmin(pmax(64 - 0.7 * (z - 10), 0), 64)
+    # Add significant background noise to avoid zero/identical deviations
+    l <- l + rnorm(1, 0, 0.5)
+    # Add random shading
     if(runif(1) < 0.05) l <- pmax(0, l - runif(1, 10, 40))
     light[i] <- pmax(0, pmin(64, l))
   }
