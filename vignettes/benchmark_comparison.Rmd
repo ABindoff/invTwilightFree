@@ -308,11 +308,19 @@ err_ffbs <- get_dist(fit_inv_ffbs$lon, fit_inv_ffbs$lat, true_lon_interp, true_l
 err_flightr <- get_dist(flightr_lon, flightr_lat, true_lon_flightr, true_lat_flightr)
 err_sgat <- get_dist(sgat_lon, sgat_lat, true_lon_sgat, true_lat_sgat)
 
+# Helper function for shortest angular distance in longitude
+lon_diff <- function(lon1, lon2) { abs((lon1 - lon2 + 180) %% 360 - 180) }
+
 accuracy_metrics <- data.frame(
   Method = c("invTF (Guided)", "invTF (FFBS)", "FLightR", "SGAT"),
   `RMSE (km)` = c(sqrt(mean(err_guided^2)), sqrt(mean(err_ffbs^2)), sqrt(mean(err_flightr^2, na.rm=TRUE)), sqrt(mean(err_sgat^2, na.rm=TRUE))),
   `Mean Lat Error (deg)` = c(mean(abs(fit_inv_guided$lat - true_lat_k)), mean(abs(fit_inv_ffbs$lat - true_lat_k)), mean(abs(flightr_lat - true_lat_flightr), na.rm=TRUE), mean(abs(sgat_lat - true_lat_sgat), na.rm=TRUE)),
-  `Mean Lon Error (deg)` = c(mean(abs(fit_inv_guided$lon - true_lon_k)), mean(abs(fit_inv_ffbs$lon - true_lon_k)), mean(abs(flightr_lon - true_lon_flightr), na.rm=TRUE), mean(abs(sgat_lon - true_lon_sgat), na.rm=TRUE))
+  `Mean Lon Error (deg)` = c(
+    mean(lon_diff(fit_inv_guided$lon, true_lon_k)), 
+    mean(lon_diff(fit_inv_ffbs$lon, true_lon_k)), 
+    mean(lon_diff(flightr_lon, true_lon_flightr), na.rm=TRUE), 
+    mean(lon_diff(sgat_lon, true_lon_sgat), na.rm=TRUE)
+  )
 )
 
 knitr::kable(accuracy_metrics, digits = 2)
