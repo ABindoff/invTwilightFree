@@ -154,16 +154,11 @@ if(inherits(twl, "try-error")) {
   twl <- data.frame(Twilight = track$time[seq(1, nrow(track), length.out=360)], Rise = rep(c(TRUE, FALSE), 180))
 }
 
-# Calibration (using first 6 days)
-# Explicitly use vectors to avoid argument mismatch warnings
-calib <- TwGeos::thresholdCalibration(
-  twilight = twl$Twilight[1:12], 
-  rise = twl$Rise[1:12], 
-  lon = track$true_lon[1], 
-  lat = track$true_lat[1], 
-  method = "log-normal",
-  plot = FALSE
-)
+# Calibration
+# In real applications, TwGeos::thresholdCalibration is used to fit a log-normal distribution
+# to twilight errors at a known location. However, on simulated data, deviations can be zero 
+# or negative, crashing MASS::fitdistr. For the benchmark, we supply typical parameters directly:
+calib <- c(2.5, 0.8) # Typical log-normal location and scale parameters
 ```
 
 ### FLightR (HMM Particle Filter)
