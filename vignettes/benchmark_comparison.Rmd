@@ -245,10 +245,11 @@ time_sgat <- system.time({
   }
   
   # 3. Observation Model
-  model <- SGAT::thresholdModel(twl$Twilight, twl$Rise, twl.pt = "Solar",
-                                alpha = calib[1:2], beta = calib[1:2],
+  model <- SGAT::thresholdModel(twl$Twilight, twl$Rise, 
+                                twilight.model = "LogNormal",
+                                alpha = calib[1], beta = calib[2],
                                 logp.x = logp.x, logp.z = logp.z,
-                                x0 = x0)
+                                x0 = x0, z0 = z0)
   
   # 4. MCMC (Short chain for benchmark purposes)
   fit_sgat <- SGAT::est.mcmc(model, x0 = x0, iters = 1000, thin = 10)
