@@ -32,6 +32,7 @@ library(ggplot2)
 library(patchwork)
 library(dplyr)
 library(tidyr)
+library(MASS)
 
 # For the benchmark, we need the comparison packages
 # if (!requireNamespace("SGAT", quietly = TRUE)) stop("Please install SGAT to run this benchmark")
@@ -149,8 +150,16 @@ if(inherits(twl, "try-error")) {
   twl <- data.frame(Twilight = track$time[seq(1, nrow(track), length.out=360)], Rise = rep(c(TRUE, FALSE), 180))
 }
 
-# Calibration
-calib <- try(TwGeos::thresholdCalibration(twl[1:4,], track$true_lon[1], track$true_lat[1], method = "log-normal"), silent = TRUE)
+# Calibration (using first 6 days)
+# Explicitly use vectors to avoid argument mismatch warnings
+calib <- TwGeos::thresholdCalibration(
+  twilight = twl$Twilight[1:12], 
+  rise = twl$Rise[1:12], 
+  lon = track$true_lon[1], 
+  lat = track$true_lat[1], 
+  method = "log-normal",
+  plot = FALSE
+)
 ```
 
 ### FLightR (HMM Particle Filter)
