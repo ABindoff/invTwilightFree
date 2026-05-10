@@ -147,7 +147,7 @@ For **SGAT** and **FLightR**, we must first identify twilights. In real-world da
 ```{r preprocess}
 # threshold = 5 for twilight detection
 twl_data <- data.frame(Date = track$time, Light = track$light)
-twl <- TwGeos::findTwilights(twl_data, threshold = 5)
+twl <- TwGeos::findTwilights(twl_data, threshold = 5, include = twl_data$Date)
 
 if(inherits(twl, "try-error")) {
   warning("TwGeos failed to find twilights. Using fallback for plotting demo.")
