@@ -89,9 +89,11 @@ simulate_benchmark <- function(duration_days = 180) {
   for(i in 1:n_obs) {
     z <- get_z(times[i], lons[i], lats[i])
     l <- pmin(pmax(64 - 0.7 * z, 0), 64)
+    # Add small background noise to avoid zero-deviation errors
+    l <- l + rnorm(1, 0, 0.1)
     # Add random shading (but ensure it doesn't break the threshold)
     if(runif(1) < 0.05) l <- pmax(0, l - runif(1, 10, 40))
-    light[i] <- l
+    light[i] <- pmax(0, pmin(64, l))
   }
   
   data.frame(time = times, true_lat = lats, true_lon = lons, light = light)
