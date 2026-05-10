@@ -245,9 +245,12 @@ time_sgat <- system.time({
   }
   
   # 3. Observation Model
+  # SGAT expects alpha as a matrix (nrow = n_twilights, 2 columns)
+  alpha_mat <- matrix(c(calib[1], calib[2]), nrow = nrow(twl), ncol = 2, byrow = TRUE)
+  # beta is for the movement model (speed gamma)
   model <- SGAT::thresholdModel(twl$Twilight, twl$Rise, 
                                 twilight.model = "LogNormal",
-                                alpha = calib[1], beta = calib[2],
+                                alpha = alpha_mat, beta = c(2, 2),
                                 logp.x = logp.x, logp.z = logp.z,
                                 x0 = x0, z0 = z0)
   
