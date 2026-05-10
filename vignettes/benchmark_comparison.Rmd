@@ -203,8 +203,13 @@ time_flightr <- system.time({
   Grid <- FLightR::make.grid(left = 70, right = 180, bottom = -80, top = 0, distance.from.land.allowed.to.use = c(-Inf, Inf))
   
   # FLightR Calibration (assuming first 3 days are known)
-  calib_flightr <- FLightR::make.calibration(proc_data, known.pos = c(track$true_lon[1], track$true_lat[1]), 
-                                             calibration.periods = c(track$time[1], track$time[1] + 3*86400))
+  calib_df <- data.frame(
+    calibration.start = track$time[1],
+    calibration.stop = track$time[1] + 3*86400,
+    lon = track$true_lon[1],
+    lat = track$true_lat[1]
+  )
+  calib_flightr <- FLightR::make.calibration(proc_data, Calibration.periods = calib_df)
   
   # Prerun object
   prerun <- FLightR::make.prerun.object(proc_data, Grid, start = c(track$true_lon[1], track$true_lat[1]), 
