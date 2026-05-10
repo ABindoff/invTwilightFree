@@ -56,7 +56,7 @@ simulate_track <- function(name, start_date, duration_days, waypoints, noise_pro
   light <- numeric(n_obs)
   for(i in 1:n_obs) {
     z <- get_solar_zenith(times[i], lons[i], lats[i])
-    l <- 64 - 0.7 * z
+    l <- 558.5 - 5.818 * z
     l <- min(max(l, 0), 64)
     light[i] <- l
   }
