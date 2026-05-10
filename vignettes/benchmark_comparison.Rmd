@@ -167,14 +167,16 @@ FLightR uses a particle filter on a spatial grid. To run it, we need to convert 
 
 ```{r fit_flightr, message=FALSE, warning=FALSE, results='hide'}
 time_flightr <- system.time({
-  # FLightR needs a specific dataframe structure with ISO8601 times
+  # FLightR needs a specific dataframe structure
   flightr_data <- data.frame(
-    datetime = format(track$time, "%Y-%m-%dT%H:%M:%SZ"),
+    datetime = format(track$time, "%Y-%m-%d %H:%M:%S"),
     light = track$light
   )
-  # Write to a temporary file
-  tmp_file <- tempfile(fileext = ".csv")
-  write.table(flightr_data, tmp_file, sep = ",", row.names = FALSE, col.names = TRUE, quote = FALSE)
+  # Write to a local file to avoid tempfile path issues
+  tmp_file <- "benchmark_flightr_input.csv"
+  write.csv(flightr_data, tmp_file, row.names = FALSE, quote = FALSE)
+  
+  if(file.size(tmp_file) == 0) stop("Failed to write FLightR input file!")
   
   # FLightR data processing
   proc_data <- FLightR::get.tags.data(tmp_file, 
