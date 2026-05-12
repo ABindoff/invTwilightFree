@@ -84,7 +84,7 @@ simulate_benchmark_base <- function(seed = 123, ideal = FALSE) {
   data.frame(time = times, true_lat = lats, true_lon = lons, light = light)
 }
 
-# Helper to extract paths from caches
+# Helper to extract paths and calculate metrics
 get_paths <- function(scenario = "adverse") {
   prefix <- if(scenario == "ideal") "_ideal" else ""
   
@@ -92,12 +92,14 @@ get_paths <- function(scenario = "adverse") {
   track <- if(scenario == "ideal") simulate_benchmark_base(42, TRUE) else simulate_benchmark_base(123, FALSE)
   
   # Fit invTF (Guided) - Fast enough to run live
-  fit_inv <- TwilightFreeSMC(
-    date_time = track$time, light = track$light,
-    start_lat = track$true_lat[1], start_lon = track$true_lon[1],
-    end_lat = track$true_lat[nrow(track)], end_lon = track$true_lon[nrow(track)],
-    method = "guided", n_particles = 1000
-  )
+  t_inv <- system.time({
+    fit_inv <- TwilightFreeSMC(
+      date_time = track$time, light = track$light,
+      start_lat = track$true_lat[1], start_lon = track$true_lon[1],
+      end_lat = track$true_lat[nrow(track)], end_lon = track$true_lon[nrow(track)],
+      method = "guided", n_particles = 1000
+    )
+  })
   
   # Load FLightR and SGAT from caches
   c_flightr <- readRDS(paste0("cache_flightr", prefix, ".rds"))
@@ -110,16 +112,41 @@ get_paths <- function(scenario = "adverse") {
   obj_sgat <- c_sgat$fit
   if (is.list(obj_sgat) && "fit" %in% names(obj_sgat)) obj_sgat <- obj_sgat$fit
   
-  # Extract
+  # Prepare Dataframes
+  df_inv <- data.frame(Time = fit_inv$knot_times, Lat = fit_inv$lat, Lon = fit_inv$lon, Method = "invTF")
+  df_flightr <- data.frame(Time = obj_flightr$Results$Quantiles$time, Lat = obj_flightr$Results$Quantiles$Medianlat, Lon = obj_flightr$Results$Quantiles$Medianlon, Method = "FLightR")
+  df_sgat <- data.frame(Time = obj_sgat$model$z, Lat = apply(obj_sgat$x[[1]][,2,], 1, mean), Lon = apply(obj_sgat$x[[1]][,1,], 1, mean), Method = "SGAT")
+  
+  # Metrics Calculation (RMSE and 95% HDI)
+  calc_metrics <- function(df) {
+    t_lat <- approx(as.numeric(track$time), track$true_lat, xout = as.numeric(df$Time))$y
+    t_lon <- approx(as.numeric(track$time), track$true_lon, xout = as.numeric(df$Time))$y
+    errs <- get_dist(df$Lon, df$Lat, t_lon, t_lat)
+    list(
+      RMSE = sqrt(mean(errs^2, na.rm=TRUE)),
+      HDI = quantile(errs, c(0.025, 0.975), na.rm=TRUE)
+    )
+  }
+  
+  m_inv <- calc_metrics(df_inv)
+  m_flightr <- calc_metrics(df_flightr)
+  m_sgat <- calc_metrics(df_sgat)
+  
   list(
     track = track,
-    inv = data.frame(Time = fit_inv$knot_times, Lat = fit_inv$lat, Lon = fit_inv$lon, Method = "invTF"),
-    flightr = data.frame(Time = obj_flightr$Results$Quantiles$time, Lat = obj_flightr$Results$Quantiles$Medianlat, Lon = obj_flightr$Results$Quantiles$Medianlon, Method = "FLightR"),
-    sgat = data.frame(Time = obj_sgat$model$z, Lat = apply(obj_sgat$x[[1]][,2,], 1, mean), Lon = apply(obj_sgat$x[[1]][,1,], 1, mean), Method = "SGAT"),
-    times = list(inv = 1, flightr = c_flightr$time["elapsed"]/60, sgat = c_sgat$time["elapsed"]/60)
+    inv = df_inv, flightr = df_flightr, sgat = df_sgat,
+    metrics = data.frame(
+      Method = c("invTF", "FLightR", "SGAT"),
+      `Time (min)` = c(round(t_inv["elapsed"]/60, 2), round(c_flightr$time["elapsed"]/60, 2), round(c_sgat$time["elapsed"]/60, 2)),
+      `RMSE (km)` = c(round(m_inv$RMSE, 1), round(m_flightr$RMSE, 1), round(m_sgat$RMSE, 1)),
+      `95% HDI (km)` = c(
+        sprintf("[%.0f, %.0f]", m_inv$HDI[1], m_inv$HDI[2]),
+        sprintf("[%.0f, %.0f]", m_flightr$HDI[1], m_flightr$HDI[2]),
+        sprintf("[%.0f, %.0f]", m_sgat$HDI[1], m_sgat$HDI[2])
+      )
+    )
   )
 }
-
 
 # Load both scenarios
 adv <- get_paths("adverse")
@@ -128,15 +155,15 @@ idl <- get_paths("ideal")
 
 ## 1. Visual Comparison: Track Maps
 
-How well do the models recover the true movement? The following maps show the simulated "Ground Truth" (black) vs. the estimated paths. Under adverse conditions, threshold-based methods (SGAT/FLightR) begin to wander as sensor noise corrupts the twilight identification.
+How well do the models recover the true movement? The following maps show the simulated "Ground Truth" (black) vs. the estimated paths. 
 
 ```{r map_plots}
 plot_map <- function(res, title) {
   ggplot() +
-    geom_path(data = res$track, aes(x = true_lon, y = true_lat), color = "black", size = 1.2, alpha = 0.5) +
-    geom_path(data = res$inv, aes(x = Lon, y = Lat, color = "invTF"), alpha = 0.8) +
-    geom_path(data = res$flightr, aes(x = Lon, y = Lat, color = "FLightR"), alpha = 0.8) +
-    geom_path(data = res$sgat, aes(x = Lon, y = Lat, color = "SGAT"), alpha = 0.8) +
+    geom_path(data = res$track, aes(x = true_lon, y = true_lat), color = "black", size = 1.5, alpha = 0.3) +
+    geom_path(data = res$inv, aes(x = Lon, y = Lat, color = "invTF"), size = 1.0, alpha = 0.8) +
+    geom_path(data = res$flightr, aes(x = Lon, y = Lat, color = "FLightR"), size = 1.0, alpha = 0.8) +
+    geom_path(data = res$sgat, aes(x = Lon, y = Lat, color = "SGAT"), size = 1.0, alpha = 0.8) +
     theme_minimal() +
     labs(title = title, x = "Longitude", y = "Latitude", color = "Method") +
     scale_color_manual(values = c("invTF" = "#E41A1C", "FLightR" = "#377EB8", "SGAT" = "#4DAF4A"))
@@ -148,7 +175,19 @@ p_map_idl <- plot_map(idl, "Ideal Conditions (Clear Skies)")
 p_map_adv / p_map_idl + plot_layout(guides = "collect")
 ```
 
-## 2. Error Analysis
+## 2. Quantitative Performance
+
+### Adverse Conditions
+```{r table_adv}
+knitr::kable(adv$metrics)
+```
+
+### Ideal Conditions
+```{r table_idl}
+knitr::kable(idl$metrics)
+```
+
+## 3. Error Analysis
 
 Under adverse conditions, traditional threshold-based models struggle with longitudinal drift caused by shading. `invTwilightFree` maintains stability by modeling the continuous light curve.
 
@@ -166,7 +205,7 @@ plot_errors <- function(res, title) {
   )
   
   ggplot(df_err, aes(x = Time, y = Err, color = Method)) +
-    geom_line(alpha = 0.6) +
+    geom_line(size = 0.8, alpha = 0.7) +
     geom_hline(yintercept = 0, linetype = "dashed") +
     theme_minimal() +
     coord_cartesian(ylim = c(-15, 15)) +
@@ -184,9 +223,12 @@ p_err_adv / p_err_idl + plot_layout(guides = "collect")
 
 `invTwilightFree` represents a shift in the efficiency frontier for solar geolocation:
 
-1. **Workflow Efficiency:** By bypassing the manual twilight identification and editing phase, researchers can process years of data in minutes. This avoids the "bottleneck" of manual interpretation that often delays large-scale tracking studies.
-2. **Reduced Complexity:** While traditional frameworks like SGAT or FLightR can be further refined with post-processing (e.g., `BSAM`), `invTwilightFree` provides a high-fidelity, smoothed posterior directly from raw data.
-3. **Computational Speed:** As shown in the "Ideal" case, even when traditional models succeed, they require **~2 hours** of MCMC or particle filtering. `invTwilightFree` achieves comparable results in **seconds**.
-4. **Accuracy:** Under adverse conditions, the margin increases significantly. While SGAT and FLightR tracks begin to "wander" due to sensor noise, the continuous likelihood model in `invTwilightFree` remains locked to the true track.
+1. **Workflow Efficiency:** By bypassing the manual twilight identification and editing phase, researchers can process years of data in minutes.
+2. **Computational Speed:** As shown in the "Ideal" case, even when traditional models succeed, they require **~2 hours** of MCMC or particle filtering. `invTwilightFree` achieves comparable results in **seconds**.
+3. **Accuracy:** Under adverse conditions, the margin increases significantly. While SGAT and FLightR tracks begin to "wander" due to sensor noise, the continuous likelihood model in `invTwilightFree` remains locked to the true track.
+
+### A Note on Simulated vs. Real Movement
+
+It is worth noting that the simulated ground-truth track used here is highly geometric (composed of long, linear migration legs). In reality, animal movement often involves periods of local residency and foraging. While the geometric path provides a rigorous "stress test" for movement models, real-world tracks might show even less "wandering" from the algorithm, as the consistent light data over days of residency provides a strong spatial anchor that "pulls" the model back to a local range.
 
 Whether in perfect or adverse conditions, `invTwilightFree` is the clear winner for high-throughput, user-friendly, light-level geolocation.
