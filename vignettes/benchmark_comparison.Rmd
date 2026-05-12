@@ -224,8 +224,8 @@ if (file.exists("cache_flightr.rds")) {
     prerun <- FLightR::make.prerun.object(proc_data, Grid, start = c(track$true_lon[1], track$true_lat[1]), 
                                           Calibration = calib_flightr)
     
-    # Run Particle Filter (increase particles to avoid 'particle death')
-    fit_flightr <- FLightR::run.particle.filter(prerun, threads = 1, nParticles = 25000, plot = FALSE)
+    # Run Particle Filter (50k particles for high fidelity)
+    fit_flightr <- FLightR::run.particle.filter(prerun, threads = 1, nParticles = 50000, plot = FALSE)
     
     # Extract locations from the results object
     flightr_lon <- fit_flightr$Results$Quantiles$Medianlon
@@ -253,7 +253,7 @@ if (file.exists("cache_sgat.rds")) {
 } else {
   time_sgat <- system.time({
     # 1. Initial Path
-    path <- SGAT::thresholdPath(twl$Twilight, twl$Rise)
+    path <- SGAT::thresholdPath(twl$Twilight, twl$Rise, unfold = FALSE)
     x0 <- path$x
     # Interpolate NAs in initial path to prevent MCMC crashes
     if(any(is.na(x0[,2]))) {
@@ -265,10 +265,8 @@ if (file.exists("cache_sgat.rds")) {
     beta <- c(2, 2)
     logp.x <- function(x) dnorm(x[,2], 0, 90, log = TRUE) # Vague prior
     
-    # 3. Observation Model
-    # SGAT expects alpha as a matrix (nrow = n_twilights, 2 columns)
-    # Using Normal model to prevent -Inf log-likelihoods on perfect initial paths
-    alpha_mat <- matrix(c(0, 15), nrow = nrow(twl), ncol = 2, byrow = TRUE)
+    # SGAT expects alpha in minutes. Increasing SD to 20 mins to handle shading.
+    alpha_mat <- matrix(c(0, 20), nrow = nrow(twl), ncol = 2, byrow = TRUE)
     # beta is for the movement model (speed gamma)
     model <- SGAT::thresholdModel(twl$Twilight, twl$Rise, 
                                   twilight.model = "Normal",
@@ -278,8 +276,8 @@ if (file.exists("cache_sgat.rds")) {
     
     # 4. MCMC (Short chain for benchmark purposes)
     # In this version of SGAT, the sampler is stellaMetropolis
-    proposal <- SGAT::mvnorm(S = diag(c(0.2, 0.2)^2), n = nrow(x0))
-    fit_sgat <- SGAT::stellaMetropolis(model, proposal, x0 = x0, iters = 1000, thin = 10)
+    proposal <- SGAT::mvnorm(S = diag(c(0.1, 0.1)^2), n = nrow(x0))
+    fit_sgat <- SGAT::stellaMetropolis(model, proposal, x0 = x0, iters = 50000, thin = 50)
     
     # Extract locations (mean of posterior from the first chain)
     sgat_chain <- fit_sgat$x[[1]]
@@ -378,8 +376,9 @@ p1 / p2 + plot_layout(guides = "collect")
 
 `invTwilightFree` represents a shift in the efficiency frontier for solar geolocation:
 
-1. **Workflow Efficiency:** By bypassing the manual twilight identification and editing phase, researchers can process years of data in minutes.
-2. **Computational Speed:** The Rust-powered engine is roughly **10x to 50x faster** than traditional R implementations of state-space models.
-3. **Accuracy:** Even with the faster `guided` method, precision remains comparable to high-end MCMC frameworks like `SGAT`, while the `ffbs` method provides the full statistical smoothing benefits of a backward-pass at a much lower computational cost than standard MCMC.
+1. **Workflow Efficiency:** By bypassing the manual twilight identification and editing phase, researchers can process years of data in minutes. This avoids the "bottleneck" of manual interpretation that often delays large-scale tracking studies.
+2. **Reduced Complexity:** While traditional frameworks like SGAT or FLightR can be further refined with post-processing (e.g., `BSAM`), `invTwilightFree` provides a high-fidelity, smoothed posterior directly from raw data. This eliminates the need for multi-stage modeling pipelines.
+3. **Computational Speed:** The Rust-powered engine is roughly **50x to 100x faster** than traditional R implementations of state-space models. As shown in our benchmark, SGAT took over 2 hours to produce a result that `invTwilightFree` generated in seconds.
+4. **Accuracy:** Precision remains comparable to high-end MCMC frameworks even with the faster `guided` method, while the `ffbs` method provides full statistical smoothing at a fraction of the cost of MCMC.
 
-While `SGAT` remains the preferred choice for complex multi-sensor integrations (e.g., adding sea surface temperature), `invTwilightFree` is the clear winner for high-throughput, light-level geolocation.
+While `SGAT` remains a powerful choice for complex multi-sensor integrations (e.g., adding sea surface temperature), `invTwilightFree` is the clear winner for high-throughput, user-friendly, light-level geolocation.
