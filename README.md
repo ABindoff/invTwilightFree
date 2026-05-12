@@ -1,15 +1,15 @@
 # invTwilightFree: High-Fidelity Solar Geolocation
 
-`invTwilightFree` is the high-performance successor to the original `TwilightFree` package. It re-imagines solar geolocation by inverting the traditional workflow: instead of identifying discrete "twilights," it models the **continuous likelihood of the entire light curve**.
+`invTwilightFree` is the modern, high-performance successor to the original `TwilightFree` method. Building on the foundational approach of modeling the **continuous likelihood of the entire light curve** (avoiding the need for manual twilight identification), `invTwilightFree` introduces a re-engineered engine designed for the next generation of animal tracking.
 
-Powered by a high-speed **Rust engine** via `extendr`, it offers $50\times$ to $100\times$ speedups over traditional state-space models while providing superior robustness to sensor shading and non-solar light noise.
+Powered by a high-speed **Rust engine** via `extendr`, it provides the same "twilight-free" workflow with $50\times$ to $100\times$ speedups and significantly enhanced robustness to sensor noise.
 
-## Key Features
+## Key Advancements
 
-*   **Truly Twilight-Free:** No manual editing or thresholding of twilight events required. Processes raw light data directly.
-*   **Rust-Powered SMC:** Implements Sequential Monte Carlo (Particle Filtering) in Rust for extreme performance.
-*   **Equinox & Polar Support:** Handles the "blind spots" of equinoxes and the "midnight sun" of polar summers using continuous likelihood and Guided Brownian Bridges.
-*   **Anomaly Robustness:** Automatically detects and down-weights artificial light at night (ALAN) and sensor shading using a built-in spike-and-slab likelihood model.
+*   **Rust-Powered SMC:** A completely new Sequential Monte Carlo (Particle Filtering) engine implemented in Rust for extreme performance and scalability.
+*   **Built-in Anomaly Detection:** Uses a sophisticated spike-and-slab likelihood model to automatically handle Artificial Light at Night (ALAN) and erratic sensor shading without manual preprocessing.
+*   **Optimized Smoothers:** Includes both fast "Guided" Brownian Bridges for real-time processing and rigorous "FFBS" (Forward-Filtering Backward-Smoothing) for publication-quality tracks.
+*   **Equinox & Polar Support:** Expertly handles the "blind spots" of equinoxes and the "midnight sun" of polar summers.
 
 ## Installation
 
