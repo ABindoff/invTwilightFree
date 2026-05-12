@@ -34,16 +34,24 @@ TwilightFreeSMC <- function(date_time, light,
     stop("date_time must be POSIXct")
   }
   
-  # Filter by time if provided
+  # Filter by time if provided with range checking
   if (!is.null(start_time)) {
-    keep <- date_time >= start_time
-    date_time <- date_time[keep]
-    light <- light[keep]
+    if (start_time < min(date_time)) {
+      warning("start_time is before the first observation date. Defaulting to first observation.")
+    } else {
+      keep <- date_time >= start_time
+      date_time <- date_time[keep]
+      light <- light[keep]
+    }
   }
   if (!is.null(end_time)) {
-    keep <- date_time <= end_time
-    date_time <- date_time[keep]
-    light <- light[keep]
+    if (end_time > max(date_time)) {
+      warning("end_time is after the last observation date. Defaulting to last observation.")
+    } else {
+      keep <- date_time <= end_time
+      date_time <- date_time[keep]
+      light <- light[keep]
+    }
   }
 
   if (length(date_time) == 0) stop("No data remains after time filtering!")
