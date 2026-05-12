@@ -103,15 +103,23 @@ get_paths <- function(scenario = "adverse") {
   c_flightr <- readRDS(paste0("cache_flightr", prefix, ".rds"))
   c_sgat <- readRDS(paste0("cache_sgat", prefix, ".rds"))
   
+  # Handle potential nesting from cache recovery
+  obj_flightr <- c_flightr$fit
+  if (is.list(obj_flightr) && "fit" %in% names(obj_flightr)) obj_flightr <- obj_flightr$fit
+  
+  obj_sgat <- c_sgat$fit
+  if (is.list(obj_sgat) && "fit" %in% names(obj_sgat)) obj_sgat <- obj_sgat$fit
+  
   # Extract
   list(
     track = track,
     inv = data.frame(Time = fit_inv$knot_times, Lat = fit_inv$lat, Lon = fit_inv$lon, Method = "invTF"),
-    flightr = data.frame(Time = c_flightr$fit$Results$Quantiles$time, Lat = c_flightr$fit$Results$Quantiles$Medianlat, Lon = c_flightr$fit$Results$Quantiles$Medianlon, Method = "FLightR"),
-    sgat = data.frame(Time = c_sgat$fit$z, Lat = apply(c_sgat$fit$x[[1]][,2,], 1, mean), Lon = apply(c_sgat$fit$x[[1]][,1,], 1, mean), Method = "SGAT"),
+    flightr = data.frame(Time = obj_flightr$Results$Quantiles$time, Lat = obj_flightr$Results$Quantiles$Medianlat, Lon = obj_flightr$Results$Quantiles$Medianlon, Method = "FLightR"),
+    sgat = data.frame(Time = obj_sgat$model$z, Lat = apply(obj_sgat$x[[1]][,2,], 1, mean), Lon = apply(obj_sgat$x[[1]][,1,], 1, mean), Method = "SGAT"),
     times = list(inv = 1, flightr = c_flightr$time["elapsed"]/60, sgat = c_sgat$time["elapsed"]/60)
   )
 }
+
 
 # Load both scenarios
 adv <- get_paths("adverse")
