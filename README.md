@@ -37,11 +37,14 @@ library(invTwilightFree)
 fit <- TwilightFreeSMC(
   date_time = track_data$time,
   light = track_data$light,
+  start_time = as.POSIXct("2024-01-05"), # Optional: ignore pre-deployment data
+  end_time = as.POSIXct("2024-06-15"),   # Optional: ignore post-retrieval data
   start_lat = -45.0, start_lon = 140.0,
   end_lat = -45.0, end_lon = 140.0,
   method = "guided",      # "guided" for speed, "ffbs" for maximum accuracy
   n_particles = 1000
 )
+
 
 # 3. Visualize the results
 plot(fit, type = "track")       # Map of the estimated path

@@ -5,6 +5,8 @@
 #' 
 #' @param date_time A vector of POSIXct dates
 #' @param light A vector of light observations
+#' @param start_time Optional start date-time (POSIXct). Data before this time will be ignored.
+#' @param end_time Optional end date-time (POSIXct). Data after this time will be ignored.
 #' @param n_particles Number of particles (default 1000)
 #' @param start_lat Initial latitude (Decimal Degrees)
 #' @param start_lon Initial longitude (Decimal Degrees)
@@ -17,7 +19,9 @@
 #' @param likelihood_params Likelihood parameters c(lambda, max_light, prob_slab). If NULL, auto-calibrates from data.
 #' @export
 #' @return A `TwilightFreeTrack` object
-TwilightFreeSMC <- function(date_time, light, n_particles = 1000, 
+TwilightFreeSMC <- function(date_time, light, 
+                           start_time = NULL, end_time = NULL,
+                           n_particles = 1000, 
                            start_lat, start_lon, 
                            end_lat = NA_real_, end_lon = NA_real_,
                            method = c("guided", "ffbs", "forward"),
@@ -29,6 +33,20 @@ TwilightFreeSMC <- function(date_time, light, n_particles = 1000,
   if(!inherits(date_time, "POSIXct")) {
     stop("date_time must be POSIXct")
   }
+  
+  # Filter by time if provided
+  if (!is.null(start_time)) {
+    keep <- date_time >= start_time
+    date_time <- date_time[keep]
+    light <- light[keep]
+  }
+  if (!is.null(end_time)) {
+    keep <- date_time <= end_time
+    date_time <- date_time[keep]
+    light <- light[keep]
+  }
+
+  if (length(date_time) == 0) stop("No data remains after time filtering!")
   
   method <- match.arg(method)
   
