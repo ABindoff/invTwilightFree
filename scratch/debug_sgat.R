@@ -1,6 +1,6 @@
 
 library(SGAT)
-cached <- readRDS('c:/Users/bindoffa/antigravity projects/invTwilightFree/vignettes/cache_sgat.rds')
+cached <- readRDS('vignettes/cache_sgat.rds')
 fit_sgat <- cached$fit
 
 cat("Structure of fit_sgat:\n")

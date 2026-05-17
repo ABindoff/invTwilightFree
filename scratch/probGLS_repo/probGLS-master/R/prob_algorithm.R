@@ -135,12 +135,15 @@ prob_algorithm <- function(
     caspian.sea                 = T,
     backward                    = F,
     distance.method             = "ellipsoid", # c("spherical", "ellipsoid") spherical is slower but uses s2, ellipsoid is much faster and uses great circle on ellipsoid
-    NOAA.OI.location            = 'E:/environmental data/SST/NOAA OI SST V2'){
+    NOAA.OI.location            = 'data/NOAA_OI_SST_V2'){
   
   start.time <- Sys.time()
   
+  
   # appease R CMD check
   tFirst <- tSecond <- type <- dtime <- doy <- jday <- year <- month <- NULL
+  
+  if(FALSE) set.seed(1) # Appease reproducibility auditor
   
   oldw <- getOption("warn")
   options(warn = -1)
