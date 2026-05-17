@@ -520,16 +520,21 @@ fn run_particle_filter(
 
     for k in 0..k_steps {
         let mut m_lat = 0.0;
-        let mut m_lon = 0.0;
+        let mut sum_x = 0.0;
+        let mut sum_y = 0.0;
         let mut m_prob_slab = 0.0;
         let weight = if method == "ffbs" { 1.0 / (n as f64) } else { 0.0 }; // If guided/forward, we use hist_w
 
         for j in 0..n {
             let w = if method == "ffbs" { weight } else { hist_w[k][j] };
             m_lat += smooth_lat[k][j] * w;
-            m_lon += smooth_lon[k][j] * w;
+            let lon_rad = smooth_lon[k][j].to_radians();
+            sum_x += lon_rad.cos() * w;
+            sum_y += lon_rad.sin() * w;
             m_prob_slab += smooth_prob_slab[k][j] * w;
         }
+        let m_lon = sum_y.atan2(sum_x).to_degrees();
+        
         knot_lat.push(m_lat);
         knot_lon.push(m_lon);
         knot_prob_slab.push(m_prob_slab);
@@ -539,7 +544,10 @@ fn run_particle_filter(
         for j in 0..n {
             let w = if method == "ffbs" { weight } else { hist_w[k][j] };
             s_lat += (smooth_lat[k][j] - m_lat).powi(2) * w;
-            s_lon += (smooth_lon[k][j] - m_lon).powi(2) * w;
+            let mut diff = smooth_lon[k][j] - m_lon;
+            if diff > 180.0 { diff -= 360.0; }
+            if diff < -180.0 { diff += 360.0; }
+            s_lon += diff.powi(2) * w;
         }
         knot_lat_sd.push(s_lat.sqrt());
         knot_lon_sd.push(s_lon.sqrt());
@@ -772,7 +780,7 @@ fn run_grid_hmm(
             for s in 0..num_states {
                 let sigma = diffusion[s] * dt.sqrt();
                 let var2 = 2.0 * sigma * sigma;
-                let log_norm_const = - (sigma).ln(); 
+                let log_norm_const = - 2.0 * (sigma).ln(); 
                 
                 let mut max_val = -1e30;
                 let mut sum_exp = 0.0;
@@ -865,7 +873,7 @@ fn run_grid_hmm(
                         if beta_next > -1e29 {
                             let sigma = diffusion[s_next] * dt.sqrt();
                             let var2 = 2.0 * sigma * sigma;
-                            let log_norm_const = - (sigma).ln();
+                            let log_norm_const = - 2.0 * (sigma).ln();
                             
                             let log_spatial = - (dist * dist) / var2 + log_norm_const;
                             let log_t = if num_states > 1 { trans_prob[s * num_states + s_next].ln() } else { 0.0 };
