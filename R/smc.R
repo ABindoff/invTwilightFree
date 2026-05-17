@@ -14,7 +14,8 @@
 #' @param end_lon Final longitude (optional, defaults to NA)
 #' @param method Track reconstruction method: "guided" (fast Brownian Bridge), "ffbs" (rigorous Forward-Filtering Backward-Smoothing), or "forward" (standard SMC).
 #' @param step_hours Time step for the particle filter knots in hours (default 12.0). Movement is proposed every `step_hours`, while likelihood is evaluated continuously.
-#' @param diffusion Movement diffusion in km/sqrt(day). Typical values range from 10 to 100.
+#' @param diffusion Movement diffusion in km/sqrt(day). Can be a vector of state-specific diffusions (e.g., c(10, 100)) to enable behavioral state-switching (HMM).
+#' @param trans_prob Optional transition probability matrix (flattened) for behavioral states. Defaults to 0.9 diagonal if multiple diffusions are provided.
 #' @param calibration Calibration parameters c(intercept, slope) mapping zenith to light. If NULL, auto-calibrates from data.
 #' @param likelihood_params Likelihood parameters c(lambda, max_light, prob_slab). If NULL, auto-calibrates from data.
 #' @export
@@ -27,8 +28,10 @@ TwilightFreeSMC <- function(date_time, light,
                            method = c("guided", "ffbs", "forward"),
                            step_hours = 12.0,
                            diffusion = 50, 
+                           trans_prob = NULL,
                            calibration = NULL,
-                           likelihood_params = NULL) {
+                           likelihood_params = NULL,
+                           spatial_mask = NULL) {
   
   if(!inherits(date_time, "POSIXct")) {
     stop("date_time must be POSIXct")
@@ -55,6 +58,16 @@ TwilightFreeSMC <- function(date_time, light,
   }
 
   if (length(date_time) == 0) stop("No data remains after time filtering!")
+  
+  if (length(diffusion) > 1 && is.null(trans_prob)) {
+    # Default to a "sticky" behavior: 90% chance to stay in current state
+    k <- length(diffusion)
+    m <- matrix((1.0 - 0.9) / (k - 1), nrow = k, ncol = k)
+    diag(m) <- 0.9
+    trans_prob <- as.numeric(t(m)) # Flatten to row-major
+  } else if (is.null(trans_prob)) {
+    trans_prob <- c(1.0)
+  }
   
   method <- match.arg(method)
   
@@ -122,6 +135,30 @@ TwilightFreeSMC <- function(date_time, light,
     process_light <- light
   }
   
+  # Process spatial mask
+  if (!is.null(spatial_mask)) {
+    if (!inherits(spatial_mask, "RasterLayer")) stop("spatial_mask must be a RasterLayer from the 'raster' package")
+    
+    # Extract dimensions and extent
+    m_nrow <- as.integer(raster::nrow(spatial_mask))
+    m_ncol <- as.integer(raster::ncol(spatial_mask))
+    
+    # Extent is xmin, xmax, ymin, ymax
+    ext <- raster::extent(spatial_mask)
+    m_ext <- as.numeric(c(ext@xmin, ext@xmax, ext@ymin, ext@ymax))
+    
+    # Extract values. raster::as.matrix returns a matrix where rows are y and cols are x.
+    # We transpose to get it in a flat vector that Rust can index via (row * ncol + col) 
+    # where row 0 is the top (ymax). raster values are inherently top-to-bottom.
+    m_mat <- as.numeric(t(raster::as.matrix(spatial_mask)))
+    m_mat[is.na(m_mat)] <- 0.0
+  } else {
+    m_nrow <- 0L
+    m_ncol <- 0L
+    m_ext <- numeric(0)
+    m_mat <- numeric(0)
+  }
+
   unix_times <- as.numeric(date_time)
   
   res <- run_particle_filter(
@@ -135,8 +172,13 @@ TwilightFreeSMC <- function(date_time, light,
     method = as.character(method),
     step_hours = as.numeric(step_hours),
     diffusion = as.numeric(diffusion),
+    trans_prob = as.numeric(trans_prob),
     calibration = as.numeric(calibration),
-    likelihood_params = as.numeric(likelihood_params)
+    likelihood_params = as.numeric(likelihood_params),
+    mask_matrix = m_mat,
+    mask_extent = m_ext,
+    mask_nrow = m_nrow,
+    mask_ncol = m_ncol
   )
   
   res$obs_light <- light

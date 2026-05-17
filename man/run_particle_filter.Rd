@@ -15,8 +15,13 @@ run_particle_filter(
   method,
   step_hours,
   diffusion,
+  trans_prob,
   calibration,
-  likelihood_params
+  likelihood_params,
+  mask_matrix,
+  mask_extent,
+  mask_nrow,
+  mask_ncol
 )
 }
 \arguments{

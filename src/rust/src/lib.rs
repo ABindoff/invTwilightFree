@@ -98,13 +98,15 @@ fn light_log_likelihood(
 }
 
 use rand::prelude::*;
-use rand_distr::Normal;
+use rand_distr::{Normal, Beta};
 
 #[derive(Clone, Copy, Debug)]
 struct Particle {
     lat: f64,
     lon: f64,
     weight: f64,
+    state: usize,
+    prob_slab: f64,
 }
 
 fn get_solar_zenith(t: f64, l: f64, phi_deg: f64) -> f64 {
@@ -162,9 +164,14 @@ fn run_particle_filter(
     end_lon: f64,
     method: String,
     step_hours: f64,
-    diffusion: f64,
+    diffusion: Vec<f64>,
+    trans_prob: Vec<f64>,
     calibration: Vec<f64>,
     likelihood_params: Vec<f64>,
+    mask_matrix: Vec<f64>,
+    mask_extent: Vec<f64>,
+    mask_nrow: i32,
+    mask_ncol: i32,
 ) -> List {
     let n = n_particles as usize;
     let num_obs = unix_times.len();
@@ -172,7 +179,10 @@ fn run_particle_filter(
     let slope = calibration[1];
     let lambda = likelihood_params[0];
     let max_light = likelihood_params[1];
-    let prob_slab = likelihood_params[2];
+    let prob_slab = if likelihood_params.len() > 2 { likelihood_params[2] } else { 0.05 };
+    let use_hyperprior = likelihood_params.len() >= 4;
+    let prior_alpha = if use_hyperprior { likelihood_params[2] } else { 1.0 };
+    let prior_beta = if use_hyperprior { likelihood_params[3] } else { 1.0 };
     let slab_density = 1.0 / max_light;
     let earth_radius = 6371.0; // km
 
@@ -193,21 +203,32 @@ fn run_particle_filter(
     let mut hist_lat = vec![vec![0.0; n]; k_steps];
     let mut hist_lon = vec![vec![0.0; n]; k_steps];
     let mut hist_w = vec![vec![0.0; n]; k_steps];
-
-    for i in 0..n {
-        hist_lat[0][i] = start_lat;
-        hist_lon[0][i] = start_lon;
-        hist_w[0][i] = 1.0 / (n as f64);
-    }
+    let mut hist_state = vec![vec![0; n]; k_steps];
+    let mut hist_prob_slab = vec![vec![0.0; n]; k_steps];
 
     let mut particles = vec![
         Particle {
             lat: start_lat,
             lon: start_lon,
             weight: 1.0 / (n as f64),
+            state: 0,
+            prob_slab: 0.0,
         };
         n
     ];
+
+    for i in 0..n {
+        particles[i].prob_slab = if use_hyperprior {
+            Beta::new(prior_alpha, prior_beta).unwrap().sample(&mut rng)
+        } else {
+            prob_slab
+        };
+        hist_lat[0][i] = start_lat;
+        hist_lon[0][i] = start_lon;
+        hist_w[0][i] = 1.0 / (n as f64);
+        hist_state[0][i] = 0;
+        hist_prob_slab[0][i] = particles[i].prob_slab;
+    }
 
     let mut obs_idx = 0; // track which observation we are up to
 
@@ -217,19 +238,32 @@ fn run_particle_filter(
         let t_curr = knot_times[k];
         let dt = (t_curr - t_prev) / 86400.0; // in days
         let time_remain = (t_end - t_prev) / 86400.0;
+        let num_states = diffusion.len();
         
-        let mut sigma = diffusion * dt.sqrt();
         let mut is_guided = false;
 
         if method == "guided" && !end_lat.is_na() && !end_lon.is_na() && time_remain > 0.0 {
             is_guided = true;
-            sigma = diffusion * ((dt * (time_remain - dt)) / time_remain).max(0.0).sqrt();
         }
+        
+        // Adaptive diffusion: if the light curve is flat (no twilight), constrain diffusion
+        let mut min_obs = f64::INFINITY;
+        let mut max_obs = f64::NEG_INFINITY;
+        let mut obs_in_range = false;
         
         // Find observations in this knot segment
         let start_obs_idx = obs_idx;
         while obs_idx < num_obs && unix_times[obs_idx] <= t_curr {
+            let o = obs_light[obs_idx];
+            if o < min_obs { min_obs = o; }
+            if o > max_obs { max_obs = o; }
+            obs_in_range = true;
             obs_idx += 1;
+        }
+        
+        let mut diff_scale = 1.0;
+        if obs_in_range && (max_obs - min_obs) < 10.0 {
+            diff_scale = 0.1; // 10x tighter diffusion
         }
         let end_obs_idx = obs_idx;
 
@@ -242,6 +276,33 @@ fn run_particle_filter(
             
             let mut lat_mean = lat1;
             let mut lon_mean = lon1;
+            
+            // Sample new state
+            let old_state = particles[i].state;
+            let mut new_state = old_state;
+            if num_states > 1 && trans_prob.len() >= num_states * num_states {
+                let r: f64 = rng.gen();
+                let mut cum_p = 0.0;
+                let offset = old_state * num_states;
+                for s in 0..num_states {
+                    cum_p += trans_prob[offset + s];
+                    if r <= cum_p {
+                        new_state = s;
+                        break;
+                    }
+                }
+            }
+            particles[i].state = new_state;
+
+            if use_hyperprior {
+                let jitter: f64 = rng.sample(Normal::new(0.0, 0.01).unwrap());
+                particles[i].prob_slab = (particles[i].prob_slab + jitter).clamp(0.001, 0.999);
+            }
+
+            let mut sigma = diffusion[new_state] * dt.sqrt() * diff_scale;
+            if is_guided {
+                sigma = diffusion[new_state] * ((dt * (time_remain - dt)) / time_remain).max(0.0).sqrt() * diff_scale;
+            }
 
             if is_guided {
                 let end_lat_rad = end_lat.to_radians();
@@ -288,7 +349,8 @@ fn run_particle_filter(
                 } else {
                     lambda * (-lambda * 2.0 * (obs - expected)).exp()
                 };
-                let den = (1.0 - prob_slab) * spike_density + prob_slab * slab_density;
+                let current_prob_slab = particles[i].prob_slab;
+                let den = (1.0 - current_prob_slab) * spike_density + current_prob_slab * slab_density;
                 log_lik += den.ln();
             }
 
@@ -310,6 +372,8 @@ fn run_particle_filter(
                 hist_lat[k][i] = particles[i].lat;
                 hist_lon[k][i] = particles[i].lon;
                 hist_w[k][i] = particles[i].weight;
+                hist_state[k][i] = particles[i].state;
+                hist_prob_slab[k][i] = particles[i].prob_slab;
             }
         } else {
             for i in 0..n { 
@@ -317,6 +381,8 @@ fn run_particle_filter(
                 hist_lat[k][i] = particles[i].lat;
                 hist_lon[k][i] = particles[i].lon; 
                 hist_w[k][i] = 1.0 / (n as f64);
+                hist_state[k][i] = particles[i].state;
+                hist_prob_slab[k][i] = particles[i].prob_slab;
             }
         }
 
@@ -345,6 +411,8 @@ fn run_particle_filter(
                 hist_lat[k][i] = particles[i].lat;
                 hist_lon[k][i] = particles[i].lon;
                 hist_w[k][i] = particles[i].weight;
+                hist_state[k][i] = particles[i].state;
+                hist_prob_slab[k][i] = particles[i].prob_slab;
             }
         }
     }
@@ -352,6 +420,8 @@ fn run_particle_filter(
     // SMOOTHING PASS (if ffbs)
     let mut smooth_lat = vec![vec![0.0; n]; k_steps];
     let mut smooth_lon = vec![vec![0.0; n]; k_steps];
+    let mut smooth_state = vec![vec![0; n]; k_steps];
+    let mut smooth_prob_slab = vec![vec![0.0; n]; k_steps];
 
     if method == "ffbs" {
         if !end_lat.is_na() && !end_lon.is_na() {
@@ -373,13 +443,13 @@ fn run_particle_filter(
                 }.min(n-1);
                 smooth_lat[k_steps-1][j] = hist_lat[k_steps-1][idx];
                 smooth_lon[k_steps-1][j] = hist_lon[k_steps-1][idx];
+                smooth_state[k_steps-1][j] = hist_state[k_steps-1][idx];
+                smooth_prob_slab[k_steps-1][j] = hist_prob_slab[k_steps-1][idx];
             }
         }
 
         for k in (0..k_steps-1).rev() {
             let dt = (knot_times[k+1] - knot_times[k]) / 86400.0;
-            let sigma = diffusion * dt.sqrt();
-            let var2 = 2.0 * sigma * sigma;
 
             for j in 0..n {
                 let next_lat = smooth_lat[k+1][j].to_radians();
@@ -394,8 +464,18 @@ fn run_particle_filter(
                     let a = ((next_lat - cur_lat) / 2.0).sin().powi(2) +
                             cur_lat.cos() * next_lat.cos() * ((next_lon - cur_lon) / 2.0).sin().powi(2);
                     let dist = 2.0 * earth_radius * a.sqrt().asin();
-                    let trans_prob = (- (dist * dist) / var2).exp();
-                    let w = hist_w[k][i] * trans_prob;
+                    
+                    let st = smooth_state[k+1][j];
+                    let sigma = diffusion[st] * dt.sqrt();
+                    let var2 = 2.0 * sigma * sigma;
+                    let mut trans_prob_val = (- (dist * dist) / var2).exp();
+                    
+                    if diffusion.len() > 1 && trans_prob.len() >= diffusion.len() * diffusion.len() {
+                        let old_st = hist_state[k][i];
+                        trans_prob_val *= trans_prob[old_st * diffusion.len() + st];
+                    }
+                    
+                    let w = hist_w[k][i] * trans_prob_val;
                     sum_w += w;
                     back_w.push(sum_w);
                 }
@@ -407,15 +487,21 @@ fn run_particle_filter(
                     }.min(n-1);
                     smooth_lat[k][j] = hist_lat[k][idx];
                     smooth_lon[k][j] = hist_lon[k][idx];
+                    smooth_state[k][j] = hist_state[k][idx];
+                    smooth_prob_slab[k][j] = hist_prob_slab[k][idx];
                 } else {
                     smooth_lat[k][j] = hist_lat[k][j];
                     smooth_lon[k][j] = hist_lon[k][j];
+                    smooth_state[k][j] = hist_state[k][j];
+                    smooth_prob_slab[k][j] = hist_prob_slab[k][j];
                 }
             }
         }
     } else {
         smooth_lat = hist_lat;
         smooth_lon = hist_lon;
+        smooth_state = hist_state;
+        smooth_prob_slab = hist_prob_slab;
         if method == "guided" && !end_lat.is_na() && !end_lon.is_na() {
             for j in 0..n {
                 smooth_lat[k_steps-1][j] = end_lat;
@@ -429,19 +515,24 @@ fn run_particle_filter(
     let mut knot_lon = Vec::with_capacity(k_steps);
     let mut knot_lat_sd = Vec::with_capacity(k_steps);
     let mut knot_lon_sd = Vec::with_capacity(k_steps);
+    let mut knot_prob_slab = Vec::with_capacity(k_steps);
+    let mut knot_prob_state = vec![Vec::with_capacity(k_steps); diffusion.len()];
 
     for k in 0..k_steps {
         let mut m_lat = 0.0;
         let mut m_lon = 0.0;
+        let mut m_prob_slab = 0.0;
         let weight = if method == "ffbs" { 1.0 / (n as f64) } else { 0.0 }; // If guided/forward, we use hist_w
 
         for j in 0..n {
             let w = if method == "ffbs" { weight } else { hist_w[k][j] };
             m_lat += smooth_lat[k][j] * w;
             m_lon += smooth_lon[k][j] * w;
+            m_prob_slab += smooth_prob_slab[k][j] * w;
         }
         knot_lat.push(m_lat);
         knot_lon.push(m_lon);
+        knot_prob_slab.push(m_prob_slab);
 
         let mut s_lat = 0.0;
         let mut s_lon = 0.0;
@@ -452,6 +543,17 @@ fn run_particle_filter(
         }
         knot_lat_sd.push(s_lat.sqrt());
         knot_lon_sd.push(s_lon.sqrt());
+
+        for s in 0..diffusion.len() {
+            let mut p_state = 0.0;
+            for j in 0..n {
+                let w = if method == "ffbs" { weight } else { hist_w[k][j] };
+                if smooth_state[k][j] == s {
+                    p_state += w;
+                }
+            }
+            knot_prob_state[s].push(p_state);
+        }
     }
 
     // Final Pass: Compute Diagnostics at every observation point using the smoothed track
@@ -475,6 +577,8 @@ fn run_particle_filter(
             let p_lon = interpolate_lon(smooth_lon[k-1][i], smooth_lon[k][i], f);
             let w = if method == "ffbs" { 1.0 / (n as f64) } else { hist_w[k][i] };
             
+            let current_prob_slab = smooth_prob_slab[k][i] * f + smooth_prob_slab[k-1][i] * (1.0 - f);
+            
             let z = get_solar_zenith(unix_times[j], p_lon, p_lat);
             mean_z += z * w;
             
@@ -485,12 +589,17 @@ fn run_particle_filter(
             } else {
                 lambda * (-lambda * 2.0 * (obs - exp)).exp()
             };
-            let den = (1.0 - prob_slab) * spike_density + prob_slab * slab_density;
-            let prob_f = (prob_slab * slab_density) / den;
+            let den = (1.0 - current_prob_slab) * spike_density + current_prob_slab * slab_density;
+            let prob_f = (current_prob_slab * slab_density) / den;
             p_false += prob_f * w;
         }
         obs_zenith.push(mean_z);
         obs_prob_false.push(p_false);
+    }
+
+    let mut prob_state_list = List::new(diffusion.len());
+    for s in 0..diffusion.len() {
+        prob_state_list.set_elt(s, knot_prob_state[s].clone().into()).unwrap();
     }
 
     list!(
@@ -499,9 +608,356 @@ fn run_particle_filter(
         lon = knot_lon,
         lat_sd = knot_lat_sd,
         lon_sd = knot_lon_sd,
+        prob_state = prob_state_list,
+        prob_slab = knot_prob_slab,
         obs_times = unix_times,
         obs_zenith = obs_zenith,
         prob_false = obs_prob_false
+    )
+}
+
+/// @name eval_logpk_grid
+/// @export
+#[extendr]
+fn eval_logpk_grid(
+    lon: &[f64],
+    lat: &[f64],
+    unix_times: &[f64],
+    obs_light: &[f64],
+    calibration: Vec<f64>,
+    likelihood_params: Vec<f64>
+) -> Vec<f64> {
+    let n = lon.len();
+    let num_obs = unix_times.len();
+    let intercept = calibration[0];
+    let slope = calibration[1];
+    let lambda = likelihood_params[0];
+    let max_light = likelihood_params[1];
+    let prob_slab = likelihood_params[2];
+    let slab_density = 1.0 / max_light;
+
+    let mut logl = vec![0.0; n];
+    
+    for i in 0..n {
+        let mut sum_logl = 0.0;
+        for j in 0..num_obs {
+            let zenith = get_solar_zenith(unix_times[j], lon[i], lat[i]);
+            let expected = (intercept - slope * zenith).max(0.0).min(max_light);
+            let obs = obs_light[j];
+            let spike = if obs <= expected {
+                lambda * (-lambda * (expected - obs)).exp()
+            } else {
+                lambda * (-lambda * 2.0 * (obs - expected)).exp()
+            };
+            let den = (1.0 - prob_slab) * spike + prob_slab * slab_density;
+            sum_logl += den.ln();
+        }
+        logl[i] = sum_logl;
+    }
+    
+    logl
+}
+
+#[extendr]
+fn run_grid_hmm(
+    lon: &[f64],
+    lat: &[f64],
+    knot_times: &[f64],
+    obs_times: &[f64],
+    obs_light: &[f64],
+    fixed_idx: &[i32],
+    fixed_lon: &[f64],
+    fixed_lat: &[f64],
+    diffusion: Vec<f64>,
+    trans_prob: Vec<f64>,
+    calibration: Vec<f64>,
+    likelihood_params: Vec<f64>,
+) -> List {
+    let n = lon.len();
+    let num_states = diffusion.len();
+    let k_steps = knot_times.len();
+    
+    let intercept = calibration[0];
+    let slope = calibration[1];
+    let lambda = likelihood_params[0];
+    let max_light = likelihood_params[1];
+    let prob_slab = likelihood_params[2];
+    let slab_density = 1.0 / max_light;
+    let earth_radius = 6371.0;
+
+    let lon_rad: Vec<f64> = lon.iter().map(|x| x.to_radians()).collect();
+    let lat_rad: Vec<f64> = lat.iter().map(|x| x.to_radians()).collect();
+
+    let mut logpk = vec![vec![0.0; n]; k_steps];
+    for k in 0..k_steps {
+        let t_curr = knot_times[k];
+        let t_prev = if k == 0 { t_curr - (knot_times[1] - knot_times[0]) } else { knot_times[k-1] };
+        
+        let mut obs_in_k = Vec::new();
+        for j in 0..obs_times.len() {
+            if obs_times[j] > t_prev && obs_times[j] <= t_curr {
+                obs_in_k.push(j);
+            }
+        }
+        
+        if obs_in_k.is_empty() { continue; }
+        
+        for i in 0..n {
+            let mut sum_logl = 0.0;
+            for &j in &obs_in_k {
+                let zenith = get_solar_zenith(obs_times[j], lon[i], lat[i]);
+                let expected = (intercept - slope * zenith).max(0.0).min(max_light);
+                let obs = obs_light[j];
+                let spike = if obs <= expected {
+                    lambda * (-lambda * (expected - obs)).exp()
+                } else {
+                    lambda * (-lambda * 2.0 * (obs - expected)).exp()
+                };
+                let den = (1.0 - prob_slab) * spike + prob_slab * slab_density;
+                sum_logl += den.ln();
+            }
+            logpk[k][i] = sum_logl;
+        }
+    }
+
+    for idx in 0..fixed_idx.len() {
+        let k = fixed_idx[idx] as usize;
+        let f_lon = fixed_lon[idx];
+        let f_lat = fixed_lat[idx];
+        
+        let mut best_i = 0;
+        let mut best_dist = f64::INFINITY;
+        for i in 0..n {
+            let a = ((lat_rad[i] - f_lat.to_radians()) / 2.0).sin().powi(2) +
+                    f_lat.to_radians().cos() * lat_rad[i].cos() * ((lon_rad[i] - f_lon.to_radians()) / 2.0).sin().powi(2);
+            let dist = 2.0 * earth_radius * a.sqrt().asin();
+            if dist < best_dist {
+                best_dist = dist;
+                best_i = i;
+            }
+        }
+        for i in 0..n {
+            if i != best_i {
+                logpk[k][i] = -1e30;
+            }
+        }
+    }
+
+    let mut alpha = vec![vec![-1e30; n * num_states]; k_steps];
+    for i in 0..n {
+        for s in 0..num_states {
+            if logpk[0][i] > -1e29 {
+                alpha[0][i * num_states + s] = logpk[0][i] - (n as f64 * num_states as f64).ln();
+            }
+        }
+    }
+
+    let mut dt_array = vec![0.0; k_steps];
+    for k in 1..k_steps {
+        dt_array[k] = (knot_times[k] - knot_times[k-1]) / 86400.0;
+    }
+
+    for k in 1..k_steps {
+        let dt = dt_array[k];
+        let mut max_sigma = 0.0;
+        for s in 0..num_states {
+            let sig = diffusion[s] * dt.sqrt();
+            if sig > max_sigma { max_sigma = sig; }
+        }
+        let threshold_dist = max_sigma * 5.0; 
+        
+        for i in 0..n {
+            if logpk[k][i] <= -1e29 { continue; } 
+            
+            for s in 0..num_states {
+                let sigma = diffusion[s] * dt.sqrt();
+                let var2 = 2.0 * sigma * sigma;
+                let log_norm_const = - (sigma).ln(); 
+                
+                let mut max_val = -1e30;
+                let mut sum_exp = 0.0;
+                
+                for j in 0..n {
+                    let lat_diff = (lat[i] - lat[j]).abs();
+                    if lat_diff > threshold_dist / 111.0 { continue; }
+                    
+                    let lon_diff = (lon[i] - lon[j]).abs();
+                    // simple conservative wrap-around or local bound
+                    let lon_diff_wrap = if lon_diff > 180.0 { 360.0 - lon_diff } else { lon_diff };
+                    let max_cos = lat_rad[i].cos().min(lat_rad[j].cos()).max(0.1);
+                    if lon_diff_wrap > threshold_dist / (111.0 * max_cos) { continue; }
+
+                    let a = ((lat_rad[i] - lat_rad[j]) / 2.0).sin().powi(2) +
+                            lat_rad[j].cos() * lat_rad[i].cos() * ((lon_rad[i] - lon_rad[j]) / 2.0).sin().powi(2);
+                    let dist = 2.0 * earth_radius * a.sqrt().asin();
+                    
+                    if dist > threshold_dist { continue; }
+                    
+                    let log_spatial = - (dist * dist) / var2 + log_norm_const;
+                    
+                    for s_prev in 0..num_states {
+                        let alpha_prev = alpha[k-1][j * num_states + s_prev];
+                        if alpha_prev > -1e29 {
+                            let log_t = if num_states > 1 { trans_prob[s_prev * num_states + s].ln() } else { 0.0 };
+                            let val = alpha_prev + log_t + log_spatial;
+                            
+                            if val > max_val {
+                                sum_exp = sum_exp * (max_val - val).exp() + 1.0;
+                                max_val = val;
+                            } else {
+                                sum_exp += (val - max_val).exp();
+                            }
+                        }
+                    }
+                }
+                
+                if sum_exp > 0.0 {
+                    alpha[k][i * num_states + s] = logpk[k][i] + max_val + sum_exp.ln();
+                }
+            }
+        }
+    }
+
+    let mut beta = vec![vec![-1e30; n * num_states]; k_steps];
+    for i in 0..n {
+        for s in 0..num_states {
+            if logpk[k_steps-1][i] > -1e29 {
+                beta[k_steps-1][i * num_states + s] = 0.0;
+            }
+        }
+    }
+
+    for k in (0..k_steps-1).rev() {
+        let dt = dt_array[k+1];
+        let mut max_sigma = 0.0;
+        for s in 0..num_states {
+            let sig = diffusion[s] * dt.sqrt();
+            if sig > max_sigma { max_sigma = sig; }
+        }
+        let threshold_dist = max_sigma * 5.0; 
+        
+        for i in 0..n {
+            if logpk[k][i] <= -1e29 { continue; }
+            
+            for s in 0..num_states {
+                let mut max_val = -1e30;
+                let mut sum_exp = 0.0;
+                
+                for j in 0..n {
+                    if logpk[k+1][j] <= -1e29 { continue; }
+                    
+                    let lat_diff = (lat[j] - lat[i]).abs();
+                    if lat_diff > threshold_dist / 111.0 { continue; }
+                    
+                    let lon_diff = (lon[j] - lon[i]).abs();
+                    let lon_diff_wrap = if lon_diff > 180.0 { 360.0 - lon_diff } else { lon_diff };
+                    let max_cos = lat_rad[i].cos().min(lat_rad[j].cos()).max(0.1);
+                    if lon_diff_wrap > threshold_dist / (111.0 * max_cos) { continue; }
+
+                    let a = ((lat_rad[j] - lat_rad[i]) / 2.0).sin().powi(2) +
+                            lat_rad[i].cos() * lat_rad[j].cos() * ((lon_rad[j] - lon_rad[i]) / 2.0).sin().powi(2);
+                    let dist = 2.0 * earth_radius * a.sqrt().asin();
+                    
+                    if dist > threshold_dist { continue; }
+                    
+                    for s_next in 0..num_states {
+                        let beta_next = beta[k+1][j * num_states + s_next];
+                        if beta_next > -1e29 {
+                            let sigma = diffusion[s_next] * dt.sqrt();
+                            let var2 = 2.0 * sigma * sigma;
+                            let log_norm_const = - (sigma).ln();
+                            
+                            let log_spatial = - (dist * dist) / var2 + log_norm_const;
+                            let log_t = if num_states > 1 { trans_prob[s * num_states + s_next].ln() } else { 0.0 };
+                            
+                            let val = beta_next + log_t + log_spatial + logpk[k+1][j];
+                            
+                            if val > max_val {
+                                sum_exp = sum_exp * (max_val - val).exp() + 1.0;
+                                max_val = val;
+                            } else {
+                                sum_exp += (val - max_val).exp();
+                            }
+                        }
+                    }
+                }
+                
+                if sum_exp > 0.0 {
+                    beta[k][i * num_states + s] = max_val + sum_exp.ln();
+                }
+            }
+        }
+    }
+
+    let mut best_lat = vec![0.0; k_steps];
+    let mut best_lon = vec![0.0; k_steps];
+    let mut knot_prob_state = vec![Vec::with_capacity(k_steps); num_states];
+    
+    for k in 0..k_steps {
+        let mut max_gamma = -1e30;
+        let mut sum_gamma_exp = 0.0;
+        let mut gamma = vec![0.0; n * num_states];
+        
+        for i in 0..n {
+            for s in 0..num_states {
+                let a_val = alpha[k][i * num_states + s];
+                let b_val = beta[k][i * num_states + s];
+                
+                if a_val > -1e29 && b_val > -1e29 {
+                    let g = a_val + b_val;
+                    gamma[i * num_states + s] = g;
+                    
+                    if g > max_gamma {
+                        sum_gamma_exp = sum_gamma_exp * (max_gamma - g).exp() + 1.0;
+                        max_gamma = g;
+                    } else {
+                        sum_gamma_exp += (g - max_gamma).exp();
+                    }
+                } else {
+                    gamma[i * num_states + s] = -1e30;
+                }
+            }
+        }
+        
+        let mut prob_states = vec![0.0; num_states];
+        let mut best_i = 0;
+        let mut best_g = -1e30;
+
+        if sum_gamma_exp > 0.0 {
+            let log_denom = max_gamma + sum_gamma_exp.ln();
+            for i in 0..n {
+                for s in 0..num_states {
+                    if gamma[i * num_states + s] > -1e29 {
+                        let w = (gamma[i * num_states + s] - log_denom).exp();
+                        prob_states[s] += w;
+                        
+                        let g_state = gamma[i * num_states + s];
+                        if g_state > best_g {
+                            best_g = g_state;
+                            best_i = i;
+                        }
+                    }
+                }
+            }
+        }
+        
+        best_lat[k] = lat[best_i];
+        best_lon[k] = lon[best_i];
+        for s in 0..num_states {
+            knot_prob_state[s].push(prob_states[s]);
+        }
+    }
+
+    let mut prob_state_list = List::new(num_states);
+    for s in 0..num_states {
+        prob_state_list.set_elt(s, knot_prob_state[s].clone().into()).unwrap();
+    }
+
+    list!(
+        time = knot_times,
+        lat = best_lat,
+        lon = best_lon,
+        prob_state = prob_state_list
     )
 }
 
@@ -510,5 +966,6 @@ extendr_module! {
     fn solar_zenith;
     fn light_log_likelihood;
     fn run_particle_filter;
+    fn eval_logpk_grid;
+    fn run_grid_hmm;
 }
-

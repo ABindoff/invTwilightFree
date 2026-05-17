@@ -1,13 +1,4 @@
----
-title: "Comprehensive Benchmark: Accuracy, Performance, and Noise Resilience"
-output: rmarkdown::html_vignette
-vignette: >
-  %\VignetteIndexEntry{Comprehensive Benchmark: Accuracy, Performance, and Noise Resilience}
-  %\VignetteEngine{knitr::rmarkdown}
-  %\VignetteEncoding{UTF-8}
----
-
-```{r setup, include = FALSE}
+## ----setup, include = FALSE---------------------------------------------------
 knitr::opts_chunk$set(
   collapse = TRUE,
   comment = "#>",
@@ -16,7 +7,7 @@ knitr::opts_chunk$set(
   out.width = "100%"
 )
 # Ensure the local version of the package is loaded
-pkgload::load_all("..")
+
 library(ggplot2)
 library(patchwork)
 library(dplyr)
@@ -44,9 +35,6 @@ get_bench_data <- function(scenario = "ideal", track_data) {
   f_prefix <- if(scenario == "ideal") "_ideal" else paste0("_seal_", scenario)
   light_col <- if(scenario == "ideal") "light_ideal" else if(scenario == "cloudy") "light_ideal" else paste0("light_", scenario)
   
-  trans_sticky <- matrix(c(0.9, 0.1, 0.1, 0.9), nrow=2)
-  trans_flat <- as.numeric(t(trans_sticky))
-
   # Fit invTF (Guided)
   t_inv_guided <- system.time({
     fit_inv_guided <- TwilightFreeSMC(
@@ -54,10 +42,9 @@ get_bench_data <- function(scenario = "ideal", track_data) {
       start_lat = track_data$true_lat[1], start_lon = track_data$true_lon[1],
       end_lat = track_data$true_lat[nrow(track_data)], end_lon = track_data$true_lon[nrow(track_data)],
       method = "guided", n_particles = 5000,
-      diffusion = c(15, 100),
-      trans_prob = trans_flat,
-      calibration = c(558.5, 5.818),
-      likelihood_params = c(1.0, 64, 2.0, 20.0)
+      diffusion = 60,
+      calibration = c(311.57, 3.19),
+      likelihood_params = c(1.0, 64, 0.05)
     )
   })
   
@@ -71,10 +58,7 @@ get_bench_data <- function(scenario = "ideal", track_data) {
       start_lat = track_data$true_lat[1], start_lon = track_data$true_lon[1],
       end_lat = track_data$true_lat[nrow(track_data)], end_lon = track_data$true_lon[nrow(track_data)],
       step_hours = 4.0,
-      diffusion = c(15, 100),
-      trans_prob = trans_flat,
-      calibration = c(558.5, 5.818),
-      likelihood_params = c(1.0, 64, 2.0, 20.0)
+      diffusion = 60
     )
   })
   
@@ -110,12 +94,28 @@ get_bench_data <- function(scenario = "ideal", track_data) {
     Method = "invTF (Guided)"
   )
   
-  df_inv_grid <- data.frame(
-    Time = as.POSIXct(fit_inv_grid$fit$time, origin="1970-01-01", tz="UTC"), 
-    Lat = fit_inv_grid$fit$lat, 
-    Lon = fit_inv_grid$fit$lon, 
-    Method = "invTF (Grid)"
-  )
+  trip_grid <- TwilightFree::trip(fit_inv_grid$fit)
+  df_inv_grid <- data.frame(Time = as.POSIXct(trip_grid[, 1], origin="1970-01-01", tz="UTC"), Method = "invTF (Grid)")
+  
+  # Smart column assignment for Grid results
+  c2 <- as.numeric(trip_grid[, 2])
+  c3 <- as.numeric(trip_grid[, 3])
+  if (all(abs(c2) <= 90, na.rm=TRUE) && !all(abs(c3) <= 90, na.rm=TRUE)) {
+    df_inv_grid$Lat <- c2
+    df_inv_grid$Lon <- c3
+  } else if (all(abs(c3) <= 90, na.rm=TRUE) && !all(abs(c2) <= 90, na.rm=TRUE)) {
+    df_inv_grid$Lat <- c3
+    df_inv_grid$Lon <- c2
+  } else {
+    # If both or neither are in [-90, 90], assume standard order but check names
+    if ("Lat" %in% colnames(trip_grid)) {
+       df_inv_grid$Lat <- as.numeric(trip_grid[, "Lat"])
+       df_inv_grid$Lon <- as.numeric(trip_grid[, "Lon"])
+    } else {
+       df_inv_grid$Lat <- c2
+       df_inv_grid$Lon <- c3
+    }
+  }
   
   df_flightr <- data.frame(Time = obj_flightr$Results$Quantiles$time, Lat = obj_flightr$Results$Quantiles$Medianlat, Lon = obj_flightr$Results$Quantiles$Medianlon, Method = "FLightR")
   
@@ -158,39 +158,14 @@ get_bench_data <- function(scenario = "ideal", track_data) {
   
   metrics <- bind_rows(m_guided, m_grid, m_flightr, m_sgat)
   
-  df_states_guided <- data.frame(
-    Time = as.POSIXct(fit_inv_guided$knot_times, origin="1970-01-01", tz="UTC"),
-    Prob_State_2 = fit_inv_guided$prob_state[[2]],
-    Method = "invTF (Guided)",
-    Scenario = scenario
-  )
-  
-  df_states_grid <- data.frame(
-    Time = as.POSIXct(fit_inv_grid$fit$time, origin="1970-01-01", tz="UTC"),
-    Prob_State_2 = fit_inv_grid$fit$prob_state[[2]],
-    Method = "invTF (Grid)",
-    Scenario = scenario
-  )
-
   list(
     paths = bind_rows(df_inv_guided, df_inv_grid, df_flightr, df_sgat) %>% mutate(Scenario = scenario),
-    metrics = metrics %>% mutate(Scenario = scenario),
-    states = bind_rows(df_states_guided, df_states_grid)
+    metrics = metrics %>% mutate(Scenario = scenario)
   )
 }
-```
 
-## Introduction
 
-This comprehensive benchmark evaluates `invTwilightFree` against `FLightR` and `SGAT` across four scenarios using a 180-day simulated Southern Elephant Seal track.
-
-### Scenarios
-1. **Ideal:** Pristine data, no shading from cloud, no ALAN.
-2. **Cloudy:** Overcast weather.
-3. **Shaded ARS:** Deep sensor shading during foraging.
-4. **ALAN + Shading:** Artificial Light At Night + Foraging noise.
-
-```{r load_data, message=FALSE, warning=FALSE}
+## ----load_data, message=FALSE, warning=FALSE----------------------------------
 # Path adjustment for vignette rendering
 track_path <- if(file.exists("scratch/simulated_seal_light_scenarios.rds")) "scratch/simulated_seal_light_scenarios.rds" else "../scratch/simulated_seal_light_scenarios.rds"
 track_data <- readRDS(track_path)
@@ -198,23 +173,18 @@ scenarios <- c("ideal", "cloudy", "shaded", "alan")
 all_results <- lapply(scenarios, function(s) get_bench_data(s, track_data))
 all_paths <- bind_rows(lapply(all_results, function(x) x$paths))
 all_metrics <- bind_rows(lapply(all_results, function(x) x$metrics))
-all_states <- bind_rows(lapply(all_results, function(x) x$states))
-```
 
-## Accuracy and Performance Summary
 
-```{r summary_table, echo=FALSE}
+## ----summary_table, echo=FALSE------------------------------------------------
 summary_tab <- all_metrics %>%
   select(Scenario, Method, RMSE, Time_s) %>%
   mutate(RMSE = round(RMSE, 1), Time_s = round(Time_s, 1)) %>%
   pivot_wider(names_from = Scenario, values_from = c(RMSE, Time_s))
 
 knitr::kable(summary_tab, caption = "Accuracy (RMSE km) and Performance (Time s)")
-```
 
-## Visual Comparison
 
-```{r plot_trajectories, echo=FALSE, fig.height=14}
+## ----plot_trajectories, echo=FALSE, fig.height=14-----------------------------
 plot_scenario <- function(scen) {
   scen_paths <- all_paths %>% filter(Scenario == scen)
   
@@ -229,19 +199,4 @@ plot_scenario <- function(scen) {
 
 (plot_scenario("ideal") / plot_scenario("cloudy"))
 (plot_scenario("shaded") / plot_scenario("alan"))
-```
 
-## Behavioural State Probabilities
-
-The `invTwilightFree` methods uniquely feature integrated multi-state behavioural modelling. In these benchmarks, a 2-state "rapid switching" transition matrix was paired with diffusion parameters `c(10, 80)` to model localized ARS (foraging) versus wide-ranging transit states.
-
-The plot below shows the inferred marginal probability of the animal being in the high-diffusion (Transit) state at any given knot:
-
-```{r plot_states, echo=FALSE, fig.height=8}
-ggplot(all_states, aes(x = Time, y = Prob_State_2, color = Method)) +
-  geom_line(linewidth = 1) +
-  facet_wrap(~Scenario, ncol = 2) +
-  theme_minimal() +
-  labs(title = "Probability of High-Diffusion State over Time", y = "P(State = 2)", x = "Time") +
-  scale_color_manual(values = c("invTF (Guided)" = "blue", "invTF (Grid)" = "red"))
-```

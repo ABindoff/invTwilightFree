@@ -39,6 +39,12 @@ light_log_likelihood <- function(obs_light, expected_light, lambda, max_light, p
 #' @param likelihood_params c(lambda, max_light, prob_slab)
 #' @name run_particle_filter
 #' @export
-run_particle_filter <- function(unix_times, obs_light, n_particles, start_lat, start_lon, end_lat, end_lon, method, step_hours, diffusion, calibration, likelihood_params) .Call(wrap__run_particle_filter, unix_times, obs_light, n_particles, start_lat, start_lon, end_lat, end_lon, method, step_hours, diffusion, calibration, likelihood_params)
+run_particle_filter <- function(unix_times, obs_light, n_particles, start_lat, start_lon, end_lat, end_lon, method, step_hours, diffusion, trans_prob, calibration, likelihood_params, mask_matrix, mask_extent, mask_nrow, mask_ncol) .Call(wrap__run_particle_filter, unix_times, obs_light, n_particles, start_lat, start_lon, end_lat, end_lon, method, step_hours, diffusion, trans_prob, calibration, likelihood_params, mask_matrix, mask_extent, mask_nrow, mask_ncol)
+
+#' @name eval_logpk_grid
+#' @export
+eval_logpk_grid <- function(lon, lat, unix_times, obs_light, calibration, likelihood_params) .Call(wrap__eval_logpk_grid, lon, lat, unix_times, obs_light, calibration, likelihood_params)
+
+run_grid_hmm <- function(lon, lat, knot_times, obs_times, obs_light, fixed_idx, fixed_lon, fixed_lat, diffusion, trans_prob, calibration, likelihood_params) .Call(wrap__run_grid_hmm, lon, lat, knot_times, obs_times, obs_light, fixed_idx, fixed_lon, fixed_lat, diffusion, trans_prob, calibration, likelihood_params)
 
 # nolint end

@@ -7,6 +7,8 @@
 TwilightFreeSMC(
   date_time,
   light,
+  start_time = NULL,
+  end_time = NULL,
   n_particles = 1000,
   start_lat,
   start_lon,
@@ -15,14 +17,20 @@ TwilightFreeSMC(
   method = c("guided", "ffbs", "forward"),
   step_hours = 12,
   diffusion = 50,
+  trans_prob = NULL,
   calibration = NULL,
-  likelihood_params = NULL
+  likelihood_params = NULL,
+  spatial_mask = NULL
 )
 }
 \arguments{
 \item{date_time}{A vector of POSIXct dates}
 
 \item{light}{A vector of light observations}
+
+\item{start_time}{Optional start date-time (POSIXct). Data before this time will be ignored.}
+
+\item{end_time}{Optional end date-time (POSIXct). Data after this time will be ignored.}
 
 \item{n_particles}{Number of particles (default 1000)}
 
@@ -38,7 +46,9 @@ TwilightFreeSMC(
 
 \item{step_hours}{Time step for the particle filter knots in hours (default 12.0). Movement is proposed every `step_hours`, while likelihood is evaluated continuously.}
 
-\item{diffusion}{Movement diffusion in km/sqrt(day). Typical values range from 10 to 100.}
+\item{diffusion}{Movement diffusion in km/sqrt(day). Can be a vector of state-specific diffusions (e.g., c(10, 100)) to enable behavioral state-switching (HMM).}
+
+\item{trans_prob}{Optional transition probability matrix (flattened) for behavioral states. Defaults to 0.9 diagonal if multiple diffusions are provided.}
 
 \item{calibration}{Calibration parameters c(intercept, slope) mapping zenith to light. If NULL, auto-calibrates from data.}
 
