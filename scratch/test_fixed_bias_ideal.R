@@ -31,7 +31,7 @@ for (scen in scenarios) {
       start_lat = track_data$true_lat[1], start_lon = track_data$true_lon[1],
       end_lat = track_data$true_lat[nrow(track_data)], end_lon = track_data$true_lon[nrow(track_data)],
       method = "guided", n_particles = 5000,
-      diffusion = c(15, 100), 
+      diffusion = c(16, 80), 
       trans_prob = trans_flat,
       calibration = c(558.5, 5.818), # THE FIX!
       likelihood_params = c(1.0, 64, 2.0, 20.0) # THE HYPERPRIOR!

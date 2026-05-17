@@ -5,17 +5,17 @@ library(dplyr)
 # Macquarie Island Coordinates
 colony_lat <- -54.619
 colony_lon <- 158.860
-target_lat <- -68.0
+target_lat <- -60.0
 target_lon <- 175.0
 
 simulate_crw_seal_4min <- function() {
   set.seed(999)
   
   # Parameters
-  duration_days <- 90
+  duration_days <- 40
   obs_per_day <- 360 # 4-min intervals
   total_obs <- duration_days * obs_per_day
-  times <- seq(as.POSIXct("2024-08-15", tz="UTC"), by = "4 mins", length.out = total_obs)
+  times <- seq(as.POSIXct("2024-01-15", tz="UTC"), by = "4 mins", length.out = total_obs)
   
   lats <- numeric(total_obs)
   lons <- numeric(total_obs)
@@ -47,7 +47,7 @@ simulate_crw_seal_4min <- function() {
     }
     
     # State switching logic (Transit vs ARS)
-    if (day <= 27 || day >= 70) {
+    if (day <= 15 || day >= 30) {
       states[i] <- 1 # Transit
     } else {
       if (states[i-1] == 2) {
@@ -57,7 +57,7 @@ simulate_crw_seal_4min <- function() {
       }
     }
     
-    bias_angle <- if (day < 70) atan2(target_lat - lats[i-1], target_lon - lons[i-1]) 
+    bias_angle <- if (day < 30) atan2(target_lat - lats[i-1], target_lon - lons[i-1]) 
                   else atan2(colony_lat - lats[i-1], colony_lon - lons[i-1])
     
     rho <- if (states[i] == 1) transit_rho else ars_rho

@@ -41,7 +41,7 @@ find_fit <- function(obj, target) {
 # Core benchmarking function
 get_bench_data <- function(scenario = "ideal", track_data) {
   # Prefix for caches
-  f_prefix <- if(scenario == "ideal") "_ideal" else paste0("_seal_", scenario)
+  f_prefix <- paste0("_seal_", scenario)
   light_col <- if(scenario == "ideal") "light_ideal" else if(scenario == "cloudy") "light_ideal" else paste0("light_", scenario)
   
   trans_sticky <- matrix(c(0.9, 0.1, 0.1, 0.9), nrow=2)
@@ -54,7 +54,7 @@ get_bench_data <- function(scenario = "ideal", track_data) {
       start_lat = track_data$true_lat[1], start_lon = track_data$true_lon[1],
       end_lat = track_data$true_lat[nrow(track_data)], end_lon = track_data$true_lon[nrow(track_data)],
       method = "guided", n_particles = 5000,
-      diffusion = c(15, 100),
+      diffusion = c(16, 80),
       trans_prob = trans_flat,
       calibration = c(558.5, 5.818),
       likelihood_params = c(1.0, 64, 2.0, 20.0)
@@ -71,7 +71,7 @@ get_bench_data <- function(scenario = "ideal", track_data) {
       start_lat = track_data$true_lat[1], start_lon = track_data$true_lon[1],
       end_lat = track_data$true_lat[nrow(track_data)], end_lon = track_data$true_lon[nrow(track_data)],
       step_hours = 4.0,
-      diffusion = c(15, 100),
+      diffusion = c(16, 80),
       trans_prob = trans_flat,
       calibration = c(558.5, 5.818),
       likelihood_params = c(1.0, 64, 2.0, 20.0)

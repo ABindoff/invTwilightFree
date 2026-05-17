@@ -641,7 +641,13 @@ fn eval_logpk_grid(
     let slope = calibration[1];
     let lambda = likelihood_params[0];
     let max_light = likelihood_params[1];
-    let prob_slab = likelihood_params[2];
+    let prob_slab = if likelihood_params.len() > 3 {
+        let alpha = likelihood_params[2];
+        let beta = likelihood_params[3];
+        alpha / (alpha + beta)
+    } else {
+        likelihood_params[2]
+    };
     let slab_density = 1.0 / max_light;
 
     let mut logl = vec![0.0; n];
@@ -689,7 +695,13 @@ fn run_grid_hmm(
     let slope = calibration[1];
     let lambda = likelihood_params[0];
     let max_light = likelihood_params[1];
-    let prob_slab = likelihood_params[2];
+    let prob_slab = if likelihood_params.len() > 3 {
+        let alpha = likelihood_params[2];
+        let beta = likelihood_params[3];
+        alpha / (alpha + beta)
+    } else {
+        likelihood_params[2]
+    };
     let slab_density = 1.0 / max_light;
     let earth_radius = 6371.0;
 
