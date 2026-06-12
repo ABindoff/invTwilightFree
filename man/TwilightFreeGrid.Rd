@@ -41,6 +41,8 @@ TwilightFreeGrid(
 
 \item{diffusion}{Movement diffusion in km/sqrt(day)}
 
+\item{trans_prob}{Optional transition probability matrix (flattened, row-major) for behavioral states. Defaults to 0.9 diagonal if multiple diffusions are provided.}
+
 \item{calibration}{Calibration parameters c(intercept, slope)}
 
 \item{likelihood_params}{Likelihood parameters c(lambda, max_light, prob_slab)}

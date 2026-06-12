@@ -18,20 +18,23 @@
 #' @param trans_prob Optional transition probability matrix (flattened) for behavioral states. Defaults to 0.9 diagonal if multiple diffusions are provided.
 #' @param calibration Calibration parameters c(intercept, slope) mapping zenith to light. If NULL, auto-calibrates from data.
 #' @param likelihood_params Likelihood parameters c(lambda, max_light, prob_slab). If NULL, auto-calibrates from data.
+#' @param spatial_mask Optional `RasterLayer` (from the `raster` package) used to constrain particles to valid habitat (e.g. sea vs land). Cells with value 0 (or `NA`) are treated as impassable. If `NULL`, no spatial constraint is applied.
+#' @param seed Integer seed for reproducibility; if `NULL` the engine is non-deterministic. Pass the same integer to reproduce identical tracks. Note that `TwilightFreeGrid` uses a deterministic HMM and needs no seed.
 #' @export
 #' @return A `TwilightFreeTrack` object
-TwilightFreeSMC <- function(date_time, light, 
+TwilightFreeSMC <- function(date_time, light,
                            start_time = NULL, end_time = NULL,
-                           n_particles = 1000, 
-                           start_lat, start_lon, 
+                           n_particles = 1000,
+                           start_lat, start_lon,
                            end_lat = NA_real_, end_lon = NA_real_,
                            method = c("guided", "ffbs", "forward"),
                            step_hours = 12.0,
-                           diffusion = 50, 
+                           diffusion = 50,
                            trans_prob = NULL,
                            calibration = NULL,
                            likelihood_params = NULL,
-                           spatial_mask = NULL) {
+                           spatial_mask = NULL,
+                           seed = NULL) {
   
   if(!inherits(date_time, "POSIXct")) {
     stop("date_time must be POSIXct")
@@ -160,15 +163,20 @@ TwilightFreeSMC <- function(date_time, light,
   }
 
   unix_times <- as.numeric(date_time)
-  
+
+  # extendr rejects NA_real_ for f64 params; use NaN as the "unknown" sentinel
+  # (Rust checks with .is_nan(), which catches both NA and NaN)
+  end_lat_f <- if (is.na(end_lat)) NaN else as.numeric(end_lat)
+  end_lon_f <- if (is.na(end_lon)) NaN else as.numeric(end_lon)
+
   res <- run_particle_filter(
     unix_times = unix_times,
     obs_light = process_light,
     n_particles = as.integer(n_particles),
     start_lat = as.numeric(start_lat),
     start_lon = as.numeric(start_lon),
-    end_lat = as.numeric(end_lat),
-    end_lon = as.numeric(end_lon),
+    end_lat = end_lat_f,
+    end_lon = end_lon_f,
     method = as.character(method),
     step_hours = as.numeric(step_hours),
     diffusion = as.numeric(diffusion),
@@ -178,7 +186,8 @@ TwilightFreeSMC <- function(date_time, light,
     mask_matrix = m_mat,
     mask_extent = m_ext,
     mask_nrow = m_nrow,
-    mask_ncol = m_ncol
+    mask_ncol = m_ncol,
+    seed = as.numeric(if (is.null(seed)) 0 else seed)
   )
   
   res$obs_light <- light

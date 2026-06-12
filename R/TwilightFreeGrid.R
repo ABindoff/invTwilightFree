@@ -10,6 +10,7 @@
 #' @param fixed Optional data frame of fixed locations with columns `time` (POSIXct), `lat`, and `lon`.
 #' @param step_hours Time step for the HMM knots in hours (default 12.0)
 #' @param diffusion Movement diffusion in km/sqrt(day)
+#' @param trans_prob Optional transition probability matrix (flattened, row-major) for behavioral states. Defaults to 0.9 diagonal if multiple diffusions are provided.
 #' @param calibration Calibration parameters c(intercept, slope)
 #' @param likelihood_params Likelihood parameters c(lambda, max_light, prob_slab)
 #' @export

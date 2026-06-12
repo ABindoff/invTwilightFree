@@ -55,7 +55,7 @@ plot(fit, type = "diagnostics") # Check for anomalous light events
 
 If you use this method, please cite the original foundational work:
 
-> Bindoff AD, Wotherspoon SJ, Guinet C, Hindell MA. Twilight-free geolocation from noisy light data. *Methods Ecol Evol.* 2017;00:1–9. https://doi.org/10.1111/2041-210X.12953
+> Bindoff AD, Wotherspoon SJ, Guinet C, Hindell MA. Twilight-free geolocation from noisy light data. *Methods Ecol Evol.* 2018;9(5):1190-1198. https://doi.org/10.1111/2041-210X.12953
 
 ## License
 

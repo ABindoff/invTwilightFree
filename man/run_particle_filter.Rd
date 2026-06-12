@@ -21,7 +21,8 @@ run_particle_filter(
   mask_matrix,
   mask_extent,
   mask_nrow,
-  mask_ncol
+  mask_ncol,
+  seed
 )
 }
 \arguments{
@@ -45,9 +46,21 @@ run_particle_filter(
 
 \item{diffusion}{Diffusion coefficient (kilometers per sqrt(day))}
 
+\item{trans_prob}{Flattened row-major transition probability matrix for behavioral states}
+
 \item{calibration}{c(intercept, slope)}
 
 \item{likelihood_params}{c(lambda, max_light, prob_slab)}
+
+\item{mask_matrix}{Flattened spatial mask matrix (0 = impassable); empty for no mask}
+
+\item{mask_extent}{c(xmin, xmax, ymin, ymax) extent of the mask raster}
+
+\item{mask_nrow}{Number of rows in the mask raster}
+
+\item{mask_ncol}{Number of columns in the mask raster}
+
+\item{seed}{Integer seed for reproducibility; 0 means non-deterministic (uses entropy)}
 }
 \description{
 Core SMC engine for TwilightFree track reconstruction.

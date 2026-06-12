@@ -6,7 +6,11 @@
 NULL
 
 #' Calculate the solar zenith angle (in degrees)
-#' Given a Unix timestamp (seconds since 1970-01-01), longitude and latitude (in degrees).
+#'
+#' @param unix_time Numeric vector of Unix timestamps (seconds since 1970-01-01 UTC)
+#' @param lon Numeric vector of longitudes (decimal degrees)
+#' @param lat Numeric vector of latitudes (decimal degrees)
+#' @return Numeric vector of solar zenith angles (degrees; 0 = overhead, 90 = horizon)
 #' @export
 solar_zenith <- function(unix_time, lon, lat) .Call(wrap__solar_zenith, unix_time, lon, lat)
 
@@ -35,12 +39,31 @@ light_log_likelihood <- function(obs_light, expected_light, lambda, max_light, p
 #' @param method Method to use: "guided", "ffbs", or "forward"
 #' @param step_hours Hours between particle movement steps
 #' @param diffusion Diffusion coefficient (kilometers per sqrt(day))
+#' @param trans_prob Flattened row-major transition probability matrix for behavioral states
 #' @param calibration c(intercept, slope)
 #' @param likelihood_params c(lambda, max_light, prob_slab)
+#' @param mask_matrix Flattened spatial mask matrix (0 = impassable); empty for no mask
+#' @param mask_extent c(xmin, xmax, ymin, ymax) extent of the mask raster
+#' @param mask_nrow Number of rows in the mask raster
+#' @param mask_ncol Number of columns in the mask raster
+#' @param seed Integer seed for reproducibility; 0 means non-deterministic (uses entropy)
 #' @name run_particle_filter
 #' @export
-run_particle_filter <- function(unix_times, obs_light, n_particles, start_lat, start_lon, end_lat, end_lon, method, step_hours, diffusion, trans_prob, calibration, likelihood_params, mask_matrix, mask_extent, mask_nrow, mask_ncol) .Call(wrap__run_particle_filter, unix_times, obs_light, n_particles, start_lat, start_lon, end_lat, end_lon, method, step_hours, diffusion, trans_prob, calibration, likelihood_params, mask_matrix, mask_extent, mask_nrow, mask_ncol)
+run_particle_filter <- function(unix_times, obs_light, n_particles, start_lat, start_lon, end_lat, end_lon, method, step_hours, diffusion, trans_prob, calibration, likelihood_params, mask_matrix, mask_extent, mask_nrow, mask_ncol, seed) .Call(wrap__run_particle_filter, unix_times, obs_light, n_particles, start_lat, start_lon, end_lat, end_lon, method, step_hours, diffusion, trans_prob, calibration, likelihood_params, mask_matrix, mask_extent, mask_nrow, mask_ncol, seed)
 
+#' Evaluate the spike-and-slab log-likelihood over a grid of locations
+#'
+#' For each candidate location, returns the summed log-likelihood of the
+#' observed light series under the continuous spike-and-slab model. Useful for
+#' visualising the likelihood surface independently of the HMM smoother.
+#'
+#' @param lon Longitudes of grid cells (degrees)
+#' @param lat Latitudes of grid cells (degrees)
+#' @param unix_times Observation timestamps (seconds since 1970-01-01)
+#' @param obs_light Observed light values
+#' @param calibration c(intercept, slope)
+#' @param likelihood_params c(lambda, max_light, prob_slab) or c(lambda, max_light, alpha, beta)
+#' @return Numeric vector of log-likelihoods, one per grid cell
 #' @name eval_logpk_grid
 #' @export
 eval_logpk_grid <- function(lon, lat, unix_times, obs_light, calibration, likelihood_params) .Call(wrap__eval_logpk_grid, lon, lat, unix_times, obs_light, calibration, likelihood_params)

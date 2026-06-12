@@ -1,5 +1,3 @@
-require(SGAT)
-require(raster)
 #' Specify a model for forwards-backwards estimation
 #'
 #' @param df data.frame containing `Light`, `Date`, and optionally `Temp` data

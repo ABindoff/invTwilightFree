@@ -2,12 +2,20 @@
 % Please edit documentation in R/extendr-wrappers.R
 \name{solar_zenith}
 \alias{solar_zenith}
-\title{Calculate the solar zenith angle (in degrees)
-Given a Unix timestamp (seconds since 1970-01-01), longitude and latitude (in degrees).}
+\title{Calculate the solar zenith angle (in degrees)}
 \usage{
 solar_zenith(unix_time, lon, lat)
 }
+\arguments{
+\item{unix_time}{Numeric vector of Unix timestamps (seconds since 1970-01-01 UTC)}
+
+\item{lon}{Numeric vector of longitudes (decimal degrees)}
+
+\item{lat}{Numeric vector of latitudes (decimal degrees)}
+}
+\value{
+Numeric vector of solar zenith angles (degrees; 0 = overhead, 90 = horizon)
+}
 \description{
 Calculate the solar zenith angle (in degrees)
-Given a Unix timestamp (seconds since 1970-01-01), longitude and latitude (in degrees).
 }

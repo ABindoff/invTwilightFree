@@ -7,6 +7,13 @@
 ^src/\.cargo$
 ^src/rust/vendor$
 ^src/rust/target$
+^src/libgcc_eh\.a$
+^src/rust/libgcc_eh\.a$
+^\.repro$
+^CRITICAL_REVIEW\.md$
+^HANDOFF.*\.md$
+^manuscripts$
+^Rplots\.pdf$
 ^src/Makevars$
 ^src/Makevars\.win$
 ^vignettes/.*\.rds$

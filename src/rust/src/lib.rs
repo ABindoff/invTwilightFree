@@ -1,7 +1,11 @@
 use extendr_api::prelude::*;
 
 /// Calculate the solar zenith angle (in degrees)
-/// Given a Unix timestamp (seconds since 1970-01-01), longitude and latitude (in degrees).
+///
+/// @param unix_time Numeric vector of Unix timestamps (seconds since 1970-01-01 UTC)
+/// @param lon Numeric vector of longitudes (decimal degrees)
+/// @param lat Numeric vector of latitudes (decimal degrees)
+/// @return Numeric vector of solar zenith angles (degrees; 0 = overhead, 90 = horizon)
 /// @export
 #[extendr]
 fn solar_zenith(unix_time: &[f64], lon: &[f64], lat: &[f64]) -> Vec<f64> {
@@ -98,6 +102,7 @@ fn light_log_likelihood(
 }
 
 use rand::prelude::*;
+use rand::rngs::StdRng;
 use rand_distr::{Normal, Beta};
 
 #[derive(Clone, Copy, Debug)]
@@ -149,8 +154,14 @@ fn interpolate_lon(lon1: f64, lon2: f64, f: f64) -> f64 {
 /// @param method Method to use: "guided", "ffbs", or "forward"
 /// @param step_hours Hours between particle movement steps
 /// @param diffusion Diffusion coefficient (kilometers per sqrt(day))
+/// @param trans_prob Flattened row-major transition probability matrix for behavioral states
 /// @param calibration c(intercept, slope)
 /// @param likelihood_params c(lambda, max_light, prob_slab)
+/// @param mask_matrix Flattened spatial mask matrix (0 = impassable); empty for no mask
+/// @param mask_extent c(xmin, xmax, ymin, ymax) extent of the mask raster
+/// @param mask_nrow Number of rows in the mask raster
+/// @param mask_ncol Number of columns in the mask raster
+/// @param seed Integer seed for reproducibility; 0 means non-deterministic (uses entropy)
 /// @name run_particle_filter
 /// @export
 #[extendr]
@@ -172,6 +183,7 @@ fn run_particle_filter(
     mask_extent: Vec<f64>,
     mask_nrow: i32,
     mask_ncol: i32,
+    seed: f64,
 ) -> List {
     let n = n_particles as usize;
     let num_obs = unix_times.len();
@@ -197,7 +209,11 @@ fn run_particle_filter(
         knot_times[k] = t_start + (k as f64) * t_step;
     }
 
-    let mut rng = thread_rng();
+    let mut rng: StdRng = if seed == 0.0 {
+        StdRng::from_entropy()
+    } else {
+        StdRng::seed_from_u64(seed as u64)
+    };
     
     // Forward History Storage (at knots)
     let mut hist_lat = vec![vec![0.0; n]; k_steps];
@@ -242,7 +258,7 @@ fn run_particle_filter(
         
         let mut is_guided = false;
 
-        if method == "guided" && !end_lat.is_na() && !end_lon.is_na() && time_remain > 0.0 {
+        if method == "guided" && !end_lat.is_nan() && !end_lon.is_nan() && time_remain > 0.0 {
             is_guided = true;
         }
         
@@ -424,7 +440,7 @@ fn run_particle_filter(
     let mut smooth_prob_slab = vec![vec![0.0; n]; k_steps];
 
     if method == "ffbs" {
-        if !end_lat.is_na() && !end_lon.is_na() {
+        if !end_lat.is_nan() && !end_lon.is_nan() {
             for j in 0..n {
                 smooth_lat[k_steps-1][j] = end_lat;
                 smooth_lon[k_steps-1][j] = end_lon;
@@ -502,7 +518,7 @@ fn run_particle_filter(
         smooth_lon = hist_lon;
         smooth_state = hist_state;
         smooth_prob_slab = hist_prob_slab;
-        if method == "guided" && !end_lat.is_na() && !end_lon.is_na() {
+        if method == "guided" && !end_lat.is_nan() && !end_lon.is_nan() {
             for j in 0..n {
                 smooth_lat[k_steps-1][j] = end_lat;
                 smooth_lon[k_steps-1][j] = end_lon;
@@ -624,6 +640,19 @@ fn run_particle_filter(
     )
 }
 
+/// Evaluate the spike-and-slab log-likelihood over a grid of locations
+///
+/// For each candidate location, returns the summed log-likelihood of the
+/// observed light series under the continuous spike-and-slab model. Useful for
+/// visualising the likelihood surface independently of the HMM smoother.
+///
+/// @param lon Longitudes of grid cells (degrees)
+/// @param lat Latitudes of grid cells (degrees)
+/// @param unix_times Observation timestamps (seconds since 1970-01-01)
+/// @param obs_light Observed light values
+/// @param calibration c(intercept, slope)
+/// @param likelihood_params c(lambda, max_light, prob_slab) or c(lambda, max_light, alpha, beta)
+/// @return Numeric vector of log-likelihoods, one per grid cell
 /// @name eval_logpk_grid
 /// @export
 #[extendr]
