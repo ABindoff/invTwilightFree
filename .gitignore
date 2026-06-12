@@ -9,3 +9,8 @@ src/Makevars.win
 inst/doc
 *.rds
 manuscripts/
+scratch/
+Rplots.pdf
+src/rust/target
+src/*.o
+src/*.dll

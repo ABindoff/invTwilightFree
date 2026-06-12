@@ -715,6 +715,7 @@ fn run_grid_hmm(
     trans_prob: Vec<f64>,
     calibration: Vec<f64>,
     likelihood_params: Vec<f64>,
+    aux_logl: Vec<f64>,
 ) -> List {
     let n = lon.len();
     let num_states = diffusion.len();
@@ -766,6 +767,18 @@ fn run_grid_hmm(
                 sum_logl += den.ln();
             }
             logpk[k][i] = sum_logl;
+        }
+    }
+
+    // Auxiliary location terms (priors, SST, bathymetry, masks) precomputed in R
+    // as a k_steps x n matrix, flattened row-major (index k*n + i). Added to every
+    // cell at every knot, including knots with no light observations, so a prior
+    // applies regardless of the light record. A -Inf entry hard-masks the cell.
+    if !aux_logl.is_empty() {
+        for k in 0..k_steps {
+            for i in 0..n {
+                logpk[k][i] += aux_logl[k * n + i];
+            }
         }
     }
 

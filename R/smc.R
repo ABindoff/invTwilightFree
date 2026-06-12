@@ -20,6 +20,7 @@
 #' @param likelihood_params Likelihood parameters c(lambda, max_light, prob_slab). If NULL, auto-calibrates from data.
 #' @param spatial_mask Optional `RasterLayer` (from the `raster` package) used to constrain particles to valid habitat (e.g. sea vs land). Cells with value 0 (or `NA`) are treated as impassable. If `NULL`, no spatial constraint is applied.
 #' @param seed Integer seed for reproducibility; if `NULL` the engine is non-deterministic. Pass the same integer to reproduce identical tracks. Note that `TwilightFreeGrid` uses a deterministic HMM and needs no seed.
+#' @importFrom stats quantile lm coef
 #' @export
 #' @return A `TwilightFreeTrack` object
 TwilightFreeSMC <- function(date_time, light,
@@ -217,6 +218,9 @@ print.TwilightFreeTrack <- function(x, ...) {
   cat("=============================================\n")
   invisible(x)
 }
+
+utils::globalVariables(c("lon", "lat", "lat_sd", "lon_sd", "time",
+                          "light", "prob", "zenith", "hour"))
 
 #' @import ggplot2
 #' @importFrom rnaturalearth ne_countries

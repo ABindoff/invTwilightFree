@@ -17,7 +17,8 @@ TwilightFreeGrid(
   diffusion = 50,
   trans_prob = NULL,
   calibration = NULL,
-  likelihood_params = NULL
+  likelihood_params = NULL,
+  terms = list()
 )
 }
 \arguments{
@@ -46,6 +47,11 @@ TwilightFreeGrid(
 \item{calibration}{Calibration parameters c(intercept, slope)}
 
 \item{likelihood_params}{Likelihood parameters c(lambda, max_light, prob_slab)}
+
+\item{terms}{Optional list of `location_term()` objects (priors, SST,
+bathymetry, masks). Each contributes an additive log-likelihood over grid
+cells that is combined with the light likelihood. Defaults to `list()`
+(light only), which reproduces the original behaviour exactly.}
 }
 \description{
 Reconstruct animal tracks using SGAT::essie and continuous likelihood

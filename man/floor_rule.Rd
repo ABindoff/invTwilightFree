@@ -2,7 +2,7 @@
 % Please edit documentation in R/sensor_rules.R
 \name{floor_rule}
 \alias{floor_rule}
-\title{Floor rule: a one-sided depth (or any lower-bound) constraint}
+\title{Floor rule: a one-sided constraint from a bounding surface}
 \usage{
 floor_rule(sd = NULL)
 }
@@ -34,7 +34,19 @@ Conventions: both `obs` and `expected` are positive-down depths in the same
 units (metres). A cell is *too shallow* when `obs > expected`; the shortfall
 is `deficit = max(0, obs - expected)`.
 
-Pair with [bathy_source()]. For a clean land exclusion, also add a sea mask;
+Generalisation: this single rule expresses any "the solid surface must lie
+beyond the animal's extreme excursion" constraint, not just diving. If a tag
+records altitude, the same rule rules out terrain that pokes above the animal
+(a tag at sea level cannot be over a mountain). Keep everything positive-down:
+express the surface and the observation as depth below sea level, so a
++2000 m summit is `-2000`, a +50 m flight altitude is `-50`, and a 1200 m
+seabed is `+1200`. Under that convention the rule is always "surface depth
+`expected` is at least the animal's least depth `obs`". This is why there is
+no separate "ceiling" rule: an upper-bound constraint is this rule with
+negated inputs.
+
+Pair with [bathy_source()] (diving) or a terrain-elevation source expressed
+positive-down (altimetry). For a clean land exclusion, also add a sea mask;
 the floor rule only constrains cells via depth, so a flat-light day with no
 deep dives leaves shallow cells unpenalised.
 }
@@ -46,6 +58,10 @@ fr(obs = 300, expected = c(50, 300, 1200))      # -Inf, 0, 0
 # Soft constraint with 200 m tolerance.
 fs <- floor_rule(sd = 200)
 round(fs(obs = 300, expected = c(100, 250, 1000)), 3)
+
+# Altimetry, positive-down: a tag at sea level (obs = 0) over terrain whose
+# elevation expressed as depth is c(summit -2000, plain -100, shore 0, sea 1200).
+floor_rule()(obs = 0, expected = c(-2000, -100, 0, 1200))   # -Inf, -Inf, 0, 0
 }
 \seealso{
 [bathy_source()], [identity_rule()]

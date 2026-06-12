@@ -13,16 +13,22 @@
 #' @param trans_prob Optional transition probability matrix (flattened, row-major) for behavioral states. Defaults to 0.9 diagonal if multiple diffusions are provided.
 #' @param calibration Calibration parameters c(intercept, slope)
 #' @param likelihood_params Likelihood parameters c(lambda, max_light, prob_slab)
+#' @param terms Optional list of `location_term()` objects (priors, SST,
+#'   bathymetry, masks). Each contributes an additive log-likelihood over grid
+#'   cells that is combined with the light likelihood. Defaults to `list()`
+#'   (light only), which reproduces the original behaviour exactly.
+#' @importFrom stats quantile lm coef
 #' @export
-TwilightFreeGrid <- function(date_time, light, grid, 
+TwilightFreeGrid <- function(date_time, light, grid,
                              start_lat = NA_real_, start_lon = NA_real_,
                              end_lat = NA_real_, end_lon = NA_real_,
                              fixed = NULL,
-                             step_hours = 12.0, 
-                             diffusion = 50, 
+                             step_hours = 12.0,
+                             diffusion = 50,
                              trans_prob = NULL,
-                             calibration = NULL, 
-                             likelihood_params = NULL) {
+                             calibration = NULL,
+                             likelihood_params = NULL,
+                             terms = list()) {
   
   if(!inherits(date_time, "POSIXct")) stop("date_time must be POSIXct")
   
@@ -134,7 +140,16 @@ TwilightFreeGrid <- function(date_time, light, grid,
   valid_obs <- !is.na(process_light)
   obs_light_clean <- process_light[valid_obs]
   obs_times_clean <- unix_times[valid_obs]
-  
+
+  # Auxiliary location terms (priors, SST, bathymetry, masks) -> additive
+  # k_steps x n log-likelihood, flattened row-major (k*n + i) to match Rust.
+  if (length(terms) > 0) {
+    aux_mat <- build_aux_matrix(terms, lon_vec, lat_vec, knot_times)
+    aux_flat <- as.numeric(t(aux_mat))
+  } else {
+    aux_flat <- numeric(0)
+  }
+
   cat("Running custom Grid HMM solver in Rust...\n")
   fit <- run_grid_hmm(
     lon = as.numeric(lon_vec),
@@ -148,7 +163,8 @@ TwilightFreeGrid <- function(date_time, light, grid,
     diffusion = as.numeric(diffusion),
     trans_prob = as.numeric(trans_prob),
     calibration = as.numeric(calibration),
-    likelihood_params = as.numeric(likelihood_params)
+    likelihood_params = as.numeric(likelihood_params),
+    aux_logl = aux_flat
   )
   
   # Return combined object
