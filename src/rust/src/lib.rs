@@ -55,6 +55,19 @@ fn solar_zenith(unix_time: &[f64], lon: &[f64], lat: &[f64]) -> Vec<f64> {
     out
 }
 
+/// Asymmetric-exponential spike density for the spike-and-slab light model.
+/// obs <= expected: one-sided exponential (shading); obs > expected: penalised
+/// with twice the decay rate (sensor physics forbid observations brighter than
+/// the clear-sky maximum).
+#[inline]
+fn spike_density(obs: f64, expected: f64, lambda: f64) -> f64 {
+    if obs <= expected {
+        lambda * (-lambda * (expected - obs)).exp()
+    } else {
+        lambda * (-lambda * 2.0 * (obs - expected)).exp()
+    }
+}
+
 /// Calculate the log-likelihood of observed light given proposed tracks.
 /// uses a spike-and-slab model for false light events.
 ///
@@ -81,18 +94,10 @@ fn light_log_likelihood(
         let obs = obs_light[i];
         let exp = expected_light[i];
         
-        // Probability under the spike (true light, subject to shading)
-        let spike_density = if obs <= exp {
-            // Shading reduces light. Exponential decay from expected max light.
-            lambda * (-lambda * (exp - obs)).exp()
-        } else {
-            // If observed is brighter than expected, we penalize it.
-            // A sharp decay prevents numerical underflow to 0 while enforcing physics.
-            lambda * (-lambda * 10.0 * (obs - exp)).exp() 
-        };
-        
+        let spike = spike_density(obs, exp, lambda);
+
         // Mixture model: (1 - pi) * True Light + pi * False Light
-        let marginal_density = (1.0 - prob_slab) * spike_density + prob_slab * slab_density;
+        let marginal_density = (1.0 - prob_slab) * spike + prob_slab * slab_density;
         
         // Accumulate log likelihood
         log_lik += marginal_density.ln();
@@ -368,13 +373,9 @@ fn run_particle_filter(
                 let zenith = get_solar_zenith(unix_times[j], p_lon, p_lat);
                 let expected = (intercept - slope * zenith).max(0.0).min(max_light);
                 let obs = obs_light[j];
-                let spike_density = if obs <= expected {
-                    lambda * (-lambda * (expected - obs)).exp()
-                } else {
-                    lambda * (-lambda * 2.0 * (obs - expected)).exp()
-                };
+                let spike = spike_density(obs, expected, lambda);
                 let current_prob_slab = particles[i].prob_slab;
-                let den = (1.0 - current_prob_slab) * spike_density + current_prob_slab * slab_density;
+                let den = (1.0 - current_prob_slab) * spike + current_prob_slab * slab_density;
                 log_lik += den.ln();
             }
 
@@ -633,12 +634,8 @@ fn run_particle_filter(
             
             let exp = (intercept - slope * z).max(0.0).min(max_light);
             let obs = obs_light[j];
-            let spike_density = if obs <= exp {
-                lambda * (-lambda * (exp - obs)).exp()
-            } else {
-                lambda * (-lambda * 2.0 * (obs - exp)).exp()
-            };
-            let den = (1.0 - current_prob_slab) * spike_density + current_prob_slab * slab_density;
+            let spike = spike_density(obs, exp, lambda);
+            let den = (1.0 - current_prob_slab) * spike + current_prob_slab * slab_density;
             let prob_f = (current_prob_slab * slab_density) / den;
             p_false += prob_f * w;
         }
@@ -712,11 +709,7 @@ fn eval_logpk_grid(
             let zenith = get_solar_zenith(unix_times[j], lon[i], lat[i]);
             let expected = (intercept - slope * zenith).max(0.0).min(max_light);
             let obs = obs_light[j];
-            let spike = if obs <= expected {
-                lambda * (-lambda * (expected - obs)).exp()
-            } else {
-                lambda * (-lambda * 2.0 * (obs - expected)).exp()
-            };
+            let spike = spike_density(obs, expected, lambda);
             let den = (1.0 - prob_slab) * spike + prob_slab * slab_density;
             sum_logl += den.ln();
         }
@@ -783,11 +776,7 @@ fn run_grid_hmm(
                 let zenith = get_solar_zenith(obs_times[j], lon[i], lat[i]);
                 let expected = (intercept - slope * zenith).max(0.0).min(max_light);
                 let obs = obs_light[j];
-                let spike = if obs <= expected {
-                    lambda * (-lambda * (expected - obs)).exp()
-                } else {
-                    lambda * (-lambda * 2.0 * (obs - expected)).exp()
-                };
+                let spike = spike_density(obs, expected, lambda);
                 let den = (1.0 - prob_slab) * spike + prob_slab * slab_density;
                 sum_logl += den.ln();
             }
