@@ -2,7 +2,7 @@
 
 `invTwilightFree` is the modern, high-performance successor to the original `TwilightFree` method. Building on the foundational approach of modeling the **continuous likelihood of the entire light curve** (avoiding the need for manual twilight identification), `invTwilightFree` introduces a re-engineered engine designed for the next generation of animal tracking.
 
-Powered by a high-speed **Rust engine** via `extendr`, it provides the same "twilight-free" workflow with $50\times$ to $100\times$ speedups and significantly enhanced robustness to sensor noise.
+Powered by a high-speed **Rust engine** via `extendr`, it provides the same "twilight-free" workflow with up to **~195× speedups** vs. SGAT/FLightR on 180-day deployments (41 s vs. ~132 min), 9–10× better accuracy under adverse shading conditions, and significantly enhanced robustness to sensor noise.
 
 ## Key Advancements
 
