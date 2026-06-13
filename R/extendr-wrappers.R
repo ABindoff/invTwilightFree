@@ -51,9 +51,16 @@ light_log_likelihood <- function(obs_light, expected_light, lambda, max_light, p
 #' @param aux_extent c(xmin, xmax, ymin, ymax) extent of the aux raster
 #' @param aux_nrow Number of rows in the aux raster
 #' @param aux_ncol Number of columns in the aux raster
+#' @param flat_light_threshold Light-range threshold (max_obs - min_obs) below which a knot is
+#'   classified as informationally flat (no visible twilight). Diffusion is scaled by
+#'   `flat_light_scale` on such knots to prevent unconstrained wandering when the light
+#'   carries no positional signal. Default 10.0 (raw light units).
+#' @param flat_light_scale Multiplicative scale applied to the diffusion coefficient on flat-light
+#'   knots (see `flat_light_threshold`). Values in (0, 1) constrain movement; 1.0 disables the
+#'   heuristic. Default 0.1 (10x tighter).
 #' @name run_particle_filter
 #' @export
-run_particle_filter <- function(unix_times, obs_light, n_particles, start_lat, start_lon, end_lat, end_lon, method, step_hours, diffusion, trans_prob, calibration, likelihood_params, mask_matrix, mask_extent, mask_nrow, mask_ncol, seed, aux_logl_flat, aux_extent, aux_nrow, aux_ncol) .Call(wrap__run_particle_filter, unix_times, obs_light, n_particles, start_lat, start_lon, end_lat, end_lon, method, step_hours, diffusion, trans_prob, calibration, likelihood_params, mask_matrix, mask_extent, mask_nrow, mask_ncol, seed, aux_logl_flat, aux_extent, aux_nrow, aux_ncol)
+run_particle_filter <- function(unix_times, obs_light, n_particles, start_lat, start_lon, end_lat, end_lon, method, step_hours, diffusion, trans_prob, calibration, likelihood_params, mask_matrix, mask_extent, mask_nrow, mask_ncol, seed, aux_logl_flat, aux_extent, aux_nrow, aux_ncol, flat_light_threshold, flat_light_scale) .Call(wrap__run_particle_filter, unix_times, obs_light, n_particles, start_lat, start_lon, end_lat, end_lon, method, step_hours, diffusion, trans_prob, calibration, likelihood_params, mask_matrix, mask_extent, mask_nrow, mask_ncol, seed, aux_logl_flat, aux_extent, aux_nrow, aux_ncol, flat_light_threshold, flat_light_scale)
 
 #' Evaluate the spike-and-slab log-likelihood over a grid of locations
 #'

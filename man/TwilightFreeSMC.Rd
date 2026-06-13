@@ -22,7 +22,9 @@ TwilightFreeSMC(
   likelihood_params = NULL,
   spatial_mask = NULL,
   seed = NULL,
-  terms = list()
+  terms = list(),
+  flat_light_threshold = 10,
+  flat_light_scale = 0.1
 )
 }
 \arguments{
@@ -61,6 +63,15 @@ TwilightFreeSMC(
 \item{seed}{Integer seed for reproducibility; if `NULL` the engine is non-deterministic. Pass the same integer to reproduce identical tracks. Note that `TwilightFreeGrid` uses a deterministic HMM and needs no seed.}
 
 \item{terms}{Optional list of `location_term()` objects (priors, SST, bathymetry, masks). Each contributes an additive log-likelihood evaluated on a spatial raster that is combined with the light likelihood per particle. Defaults to `list()` (light only).}
+
+\item{flat_light_threshold}{Light-range threshold (raw light units; `max_obs - min_obs` within a
+knot interval) below which the interval is classified as informationally flat — no visible
+twilight, so light provides no positional signal. Diffusion is multiplied by
+`flat_light_scale` on such knots. Default `10.0`. Set to `0` to disable.}
+
+\item{flat_light_scale}{Diffusion multiplier applied on flat-light knots (see
+`flat_light_threshold`). Values in \eqn{(0, 1)} constrain movement; `1.0` disables the
+heuristic entirely. Default `0.1` (10\eqn{\times} tighter).}
 }
 \value{
 A `TwilightFreeTrack` object

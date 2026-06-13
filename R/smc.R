@@ -21,6 +21,13 @@
 #' @param spatial_mask Optional `RasterLayer` (from the `raster` package) used to constrain particles to valid habitat (e.g. sea vs land). Cells with value 0 (or `NA`) are treated as impassable. If `NULL`, no spatial constraint is applied.
 #' @param seed Integer seed for reproducibility; if `NULL` the engine is non-deterministic. Pass the same integer to reproduce identical tracks. Note that `TwilightFreeGrid` uses a deterministic HMM and needs no seed.
 #' @param terms Optional list of `location_term()` objects (priors, SST, bathymetry, masks). Each contributes an additive log-likelihood evaluated on a spatial raster that is combined with the light likelihood per particle. Defaults to `list()` (light only).
+#' @param flat_light_threshold Light-range threshold (raw light units; `max_obs - min_obs` within a
+#'   knot interval) below which the interval is classified as informationally flat — no visible
+#'   twilight, so light provides no positional signal. Diffusion is multiplied by
+#'   `flat_light_scale` on such knots. Default `10.0`. Set to `0` to disable.
+#' @param flat_light_scale Diffusion multiplier applied on flat-light knots (see
+#'   `flat_light_threshold`). Values in \eqn{(0, 1)} constrain movement; `1.0` disables the
+#'   heuristic entirely. Default `0.1` (10\eqn{\times} tighter).
 #' @importFrom stats quantile lm coef
 #' @export
 #' @return A `TwilightFreeTrack` object
@@ -37,7 +44,9 @@ TwilightFreeSMC <- function(date_time, light,
                            likelihood_params = NULL,
                            spatial_mask = NULL,
                            seed = NULL,
-                           terms = list()) {
+                           terms = list(),
+                           flat_light_threshold = 10.0,
+                           flat_light_scale = 0.1) {
   
   if(!inherits(date_time, "POSIXct")) {
     stop("date_time must be POSIXct")
@@ -228,7 +237,9 @@ TwilightFreeSMC <- function(date_time, light,
     aux_logl_flat = a_flat,
     aux_extent = a_ext,
     aux_nrow = a_nrow,
-    aux_ncol = a_ncol
+    aux_ncol = a_ncol,
+    flat_light_threshold = as.numeric(flat_light_threshold),
+    flat_light_scale = as.numeric(flat_light_scale)
   )
   
   res$obs_light <- light

@@ -171,6 +171,13 @@ fn interpolate_lon(lon1: f64, lon2: f64, f: f64) -> f64 {
 /// @param aux_extent c(xmin, xmax, ymin, ymax) extent of the aux raster
 /// @param aux_nrow Number of rows in the aux raster
 /// @param aux_ncol Number of columns in the aux raster
+/// @param flat_light_threshold Light-range threshold (max_obs - min_obs) below which a knot is
+///   classified as informationally flat (no visible twilight). Diffusion is scaled by
+///   `flat_light_scale` on such knots to prevent unconstrained wandering when the light
+///   carries no positional signal. Default 10.0 (raw light units).
+/// @param flat_light_scale Multiplicative scale applied to the diffusion coefficient on flat-light
+///   knots (see `flat_light_threshold`). Values in (0, 1) constrain movement; 1.0 disables the
+///   heuristic. Default 0.1 (10x tighter).
 /// @name run_particle_filter
 /// @export
 #[extendr]
@@ -197,6 +204,8 @@ fn run_particle_filter(
     aux_extent: Vec<f64>,
     aux_nrow: i32,
     aux_ncol: i32,
+    flat_light_threshold: f64,
+    flat_light_scale: f64,
 ) -> List {
     let n = n_particles as usize;
     let num_obs = unix_times.len();
@@ -291,8 +300,8 @@ fn run_particle_filter(
         }
         
         let mut diff_scale = 1.0;
-        if obs_in_range && (max_obs - min_obs) < 10.0 {
-            diff_scale = 0.1; // 10x tighter diffusion
+        if obs_in_range && (max_obs - min_obs) < flat_light_threshold {
+            diff_scale = flat_light_scale;
         }
         let end_obs_idx = obs_idx;
 

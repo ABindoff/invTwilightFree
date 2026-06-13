@@ -26,7 +26,9 @@ run_particle_filter(
   aux_logl_flat,
   aux_extent,
   aux_nrow,
-  aux_ncol
+  aux_ncol,
+  flat_light_threshold,
+  flat_light_scale
 )
 }
 \arguments{
@@ -73,6 +75,15 @@ run_particle_filter(
 \item{aux_nrow}{Number of rows in the aux raster}
 
 \item{aux_ncol}{Number of columns in the aux raster}
+
+\item{flat_light_threshold}{Light-range threshold (max_obs - min_obs) below which a knot is
+classified as informationally flat (no visible twilight). Diffusion is scaled by
+`flat_light_scale` on such knots to prevent unconstrained wandering when the light
+carries no positional signal. Default 10.0 (raw light units).}
+
+\item{flat_light_scale}{Multiplicative scale applied to the diffusion coefficient on flat-light
+knots (see `flat_light_threshold`). Values in (0, 1) constrain movement; 1.0 disables the
+heuristic. Default 0.1 (10x tighter).}
 }
 \description{
 Core SMC engine for TwilightFree track reconstruction.
