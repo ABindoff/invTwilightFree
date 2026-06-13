@@ -328,12 +328,19 @@ fn run_particle_filter(
                 particles[i].prob_slab = (particles[i].prob_slab + jitter).clamp(0.001, 0.999);
             }
 
-            let mut sigma = diffusion[new_state] * dt.sqrt() * diff_scale;
-            if is_guided {
-                sigma = diffusion[new_state] * ((dt * (time_remain - dt)) / time_remain).max(0.0).sqrt() * diff_scale;
-            }
+            let sigma_u = diffusion[new_state] * dt.sqrt() * diff_scale;
+            // Brownian-bridge variance: sigma_g^2 = sigma_u^2 * (time_remain - dt)/time_remain.
+            // Degenerates to 0 when time_remain == dt (last step); fall back to unguided there.
+            let sigma_g_sq = if is_guided {
+                (diffusion[new_state] * diff_scale).powi(2)
+                    * (dt * (time_remain - dt)).max(0.0) / time_remain
+            } else {
+                0.0
+            };
+            let do_guided = is_guided && sigma_g_sq > 1e-10;
+            let sigma = if do_guided { sigma_g_sq.sqrt() } else { sigma_u };
 
-            if is_guided {
+            if do_guided {
                 let end_lat_rad = end_lat.to_radians();
                 let end_lon_rad = end_lon.to_radians();
                 let a = ((end_lat_rad - lat1) / 2.0).sin().powi(2) +
@@ -346,7 +353,7 @@ fn run_particle_filter(
                 let by = (end_lon_rad - lon1).sin() * end_lat_rad.cos();
                 let bx = lat1.cos() * end_lat_rad.sin() - lat1.sin() * end_lat_rad.cos() * (end_lon_rad - lon1).cos();
                 let bearing = by.atan2(bx);
-                
+
                 lat_mean = (lat1.sin() * pull_dr.cos() + lat1.cos() * pull_dr.sin() * bearing.cos()).asin();
                 lon_mean = lon1 + (bearing.sin() * pull_dr.sin() * lat1.cos()).atan2(pull_dr.cos() - lat1.sin() * lat_mean.sin());
             }
@@ -394,6 +401,27 @@ fn run_particle_filter(
                 let row_idx = row_idx.min(aux_nrows.saturating_sub(1));
                 let n_cells = aux_nrows * aux_ncols;
                 log_lik += aux_logl_flat[k * n_cells + row_idx * aux_ncols + col_idx];
+            }
+
+            // IS correction for the guided proposal (Doob h-transform analog).
+            // The guided kernel shifts mass toward the endpoint; without this correction
+            // the weights contain only the likelihood and the estimate is biased.
+            //
+            // log(p_u(x_k|x_{k-1}) / q_g(x_k|x_{k-1},x_T))
+            //   = log(σ_g²/σ_u²) + d_g²/(2σ_g²) − d_u²/(2σ_u²)
+            //
+            // d_g = d  (step from guided mean, km; constructed above)
+            // d_u = great-circle distance from previous to new position (km)
+            if do_guided {
+                let cos_a = (lat2.sin() * lat1.sin()
+                    + lat2.cos() * lat1.cos() * (lon2 - lon1).cos())
+                    .clamp(-1.0, 1.0);
+                let d_u = cos_a.acos() * earth_radius;
+                let sigma_u_sq = sigma_u * sigma_u;
+                let sigma_g_sq_v = sigma * sigma;
+                log_lik += (sigma_g_sq_v / sigma_u_sq).ln()
+                    + d * d / (2.0 * sigma_g_sq_v)
+                    - d_u * d_u / (2.0 * sigma_u_sq);
             }
 
             log_weights[i] = log_lik;
