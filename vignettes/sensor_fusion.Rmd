@@ -1,0 +1,349 @@
+---
+title: "Sensor Fusion: Combining Light with Environmental Constraints"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Sensor Fusion: Combining Light with Environmental Constraints}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment  = "#>",
+  fig.width  = 8,
+  fig.height = 4.5,
+  out.width  = "100%"
+)
+```
+
+## Overview
+
+The `terms` argument of `TwilightFreeGrid()` (and `TwilightFreeSMC()`) accepts a list
+of `location_term()` objects.  Each term adds an additive log-likelihood contribution
+over the grid at every knot, combining any number of physical constraints with the
+light likelihood.
+
+This vignette fits four models on one simulated equinox track and compares their accuracy:
+
+| Model | Key terms |
+|-------|-----------|
+| 1 — Light only | none |
+| 2 — Light + hemisphere prior | breeding-range knowledge |
+| 3 — Light + bathymetry floor | 500 m max-dive constraint |
+| 4 — Light + all three | prior + bathy + SST (via `function_source`) |
+
+A final section demonstrates `function_source()` and `custom_rule()`.
+
+---
+
+## Simulated track
+
+The simulated animal is in the **Southern Ocean at lat = −25°, lon = 150°** (subtropical
+South Pacific).  The tag was recovered near the September equinox.  We deliberately
+generate the light observations from the **northern mirror** (+25°) to trigger the
+well-known equinox hemisphere confusion: near 22 September the solar zenith at ±25°
+differs by only ~0.36°, so the light-only likelihood is bimodal and the MAP ends up
+in the wrong hemisphere.
+
+```{r simulate}
+library(invTwilightFree)
+library(raster)
+
+true_lon <- 150
+true_lat <- -25
+cal <- c(64, 64 / 90)   # intercept, slope
+lp  <- c(0.5, 64, 0.05) # lambda, max_light, prob_slab
+
+times  <- seq(as.POSIXct("2024-09-22", tz = "UTC"),
+              as.POSIXct("2024-09-24", tz = "UTC"),
+              by = "10 min")
+t_unix <- as.numeric(times)
+
+set.seed(42)
+zenith_north <- solar_zenith(t_unix,
+                              rep(true_lon, length(t_unix)),
+                              rep(+25,      length(t_unix)))
+obs <- pmax(0, pmin(64, cal[1] - cal[2] * zenith_north + rnorm(length(t_unix), 0, 1)))
+```
+
+The grid is symmetric around the equator so the north/south degeneracy is exact within
+the grid:
+
+```{r grid}
+grid <- makeGrid(lon = c(145, 155), lat = c(-35, 35), cell.size = 2.5)
+```
+
+---
+
+## Shared helper: great-circle RMSE
+
+```{r helpers}
+gc_dist <- function(lon1, lat1, lon2, lat2) {
+  r <- pi / 180
+  acos(pmin(1, sin(lat1 * r) * sin(lat2 * r) +
+              cos(lat1 * r) * cos(lat2 * r) * cos((lon2 - lon1) * r))) * 6371
+}
+rmse_km <- function(fit_obj) {
+  sqrt(mean(gc_dist(fit_obj$fit$lon, fit_obj$fit$lat, true_lon, true_lat)^2))
+}
+```
+
+---
+
+## Model 1: Light only
+
+```{r fit_lo, message = FALSE}
+fit_lo <- TwilightFreeGrid(
+  date_time         = times,
+  light             = obs,
+  grid              = grid,
+  calibration       = cal,
+  likelihood_params = lp,
+  step_hours        = 12,
+  diffusion         = 200
+)
+cat(sprintf("Light-only  — mean lat: %+.1f°   RMSE: %d km\n",
+            mean(fit_lo$fit$lat), round(rmse_km(fit_lo))))
+```
+
+The MAP is at approximately +24°: wrong hemisphere, ~5 400 km from the true track.
+
+---
+
+## Model 2: Hemisphere prior
+
+`hemisphere_prior("S")` adds log(10⁻³) ≈ −6.9 nats to every northern-hemisphere cell.
+That is strong enough to break the equinox tie but weak enough to be overridden by
+decisive light data outside the equinox window.
+
+```{r fit_hemi, message = FALSE}
+term_hemi <- location_term(
+  "hemisphere",
+  source = hemisphere_prior(function(d) "S", softness = 1e-3),
+  rule   = identity_rule()
+)
+
+fit_hemi <- TwilightFreeGrid(
+  date_time         = times,
+  light             = obs,
+  grid              = grid,
+  calibration       = cal,
+  likelihood_params = lp,
+  step_hours        = 12,
+  diffusion         = 200,
+  terms             = list(term_hemi)
+)
+cat(sprintf("+ hemi prior — mean lat: %+.1f°   RMSE: %d km\n",
+            mean(fit_hemi$fit$lat), round(rmse_km(fit_hemi))))
+```
+
+---
+
+## Model 3: Bathymetry floor
+
+The tag records a maximum dive depth of **500 m** at every knot.  Water depths of
+200 m (northern subtropical shelf-like region in this synthetic scenario) are too
+shallow for a 500 m dive and receive −∞ log-likelihood from `floor_rule()`.
+
+```{r fit_bathy, message = FALSE}
+# Synthetic depth raster: northern cells (lat > 0) = 200 m; southern (lat < 0) = 4 000 m.
+# raster() fills rows top-to-bottom, so the first matrix row maps to the northern band.
+depth_r <- raster::raster(
+  matrix(c(200, 4000), ncol = 1),
+  xmn = 145, xmx = 155, ymn = -35, ymx = 35
+)
+
+dive_df    <- data.frame(time = times, value = 500)
+term_bathy <- location_term(
+  "bathy",
+  tag    = dive_df,
+  reduce = "max",
+  source = bathy_source(rast = depth_r),
+  rule   = floor_rule()
+)
+
+fit_bathy <- TwilightFreeGrid(
+  date_time         = times,
+  light             = obs,
+  grid              = grid,
+  calibration       = cal,
+  likelihood_params = lp,
+  step_hours        = 12,
+  diffusion         = 200,
+  terms             = list(term_bathy)
+)
+cat(sprintf("+ bathy      — mean lat: %+.1f°   RMSE: %d km\n",
+            mean(fit_bathy$fit$lat), round(rmse_km(fit_bathy))))
+```
+
+Bathymetry alone corrects the hemisphere because the 500 m dive is physically impossible
+in 200 m water.  The two constraints (prior and bathy) use entirely different data
+streams — breeding-range knowledge versus dive behaviour — and each independently
+resolves the ambiguity.
+
+---
+
+## Model 4: All three terms combined
+
+We add a sea surface temperature channel via `function_source()`.  The tag records
+~14 °C; the synthetic SST field is warmest in the northern subtropics, matching the
+true (southern) location best.
+
+```{r fit_full, message = FALSE}
+sst_fn <- function_source(function(lon, lat, date) {
+  14 + (lat - true_lat) * 0.3     # 14 °C at true_lat; warmer to the north
+})
+sst_tag  <- data.frame(time = times, value = 14)
+term_sst <- location_term(
+  "sst",
+  tag    = sst_tag,
+  reduce = "mean",
+  source = sst_fn,
+  rule   = student_rule(sd = 3, df = 4)
+)
+
+fit_full <- TwilightFreeGrid(
+  date_time         = times,
+  light             = obs,
+  grid              = grid,
+  calibration       = cal,
+  likelihood_params = lp,
+  step_hours        = 12,
+  diffusion         = 200,
+  terms             = list(term_hemi, term_bathy, term_sst)
+)
+cat(sprintf("+ all three  — mean lat: %+.1f°   RMSE: %d km\n",
+            mean(fit_full$fit$lat), round(rmse_km(fit_full))))
+```
+
+---
+
+## Comparing the models
+
+```{r compare_plot, echo = FALSE, fig.cap = "Posterior latitude at each 12-hour knot (5 knots over 2 days). Dashed line = true latitude (−25°). Every constraint-augmented model recovers the southern hemisphere; the light-only MAP sits at the northern mirror (~+24°)."}
+k_steps  <- length(fit_lo$fit$lat)
+knot_t   <- seq(min(times), max(times), length.out = k_steps)
+
+df_all <- rbind(
+  data.frame(time  = knot_t, lat = fit_lo$fit$lat,    model = "Light only"),
+  data.frame(time  = knot_t, lat = fit_hemi$fit$lat,  model = "Light + prior"),
+  data.frame(time  = knot_t, lat = fit_bathy$fit$lat, model = "Light + bathy"),
+  data.frame(time  = knot_t, lat = fit_full$fit$lat,  model = "Light + all three")
+)
+df_all$model <- factor(df_all$model,
+                       levels = c("Light only", "Light + prior",
+                                  "Light + bathy", "Light + all three"))
+
+ggplot2::ggplot(df_all, ggplot2::aes(x = time, y = lat, colour = model)) +
+  ggplot2::geom_line(linewidth = 1.0) +
+  ggplot2::geom_point(size = 2.5) +
+  ggplot2::geom_hline(yintercept = true_lat, linetype = "dashed",
+                      colour = "black", linewidth = 0.6) +
+  ggplot2::annotate("text",
+                    x     = min(knot_t),
+                    y     = true_lat - 1.5,
+                    label = paste0("true lat = ", true_lat, "°"),
+                    hjust = 0, size = 3.2, colour = "black") +
+  ggplot2::scale_colour_manual(
+    values = c("Light only"        = "#e74c3c",
+               "Light + prior"     = "#2980b9",
+               "Light + bathy"     = "#27ae60",
+               "Light + all three" = "#8e44ad")
+  ) +
+  ggplot2::scale_x_datetime(date_labels = "%b %d") +
+  ggplot2::labs(x = NULL, y = "Posterior latitude (°)", colour = NULL) +
+  ggplot2::theme_minimal(base_size = 12) +
+  ggplot2::theme(legend.position = "bottom")
+```
+
+### RMSE table
+
+```{r rmse_table, echo = FALSE}
+knitr::kable(
+  data.frame(
+    Model   = c("Light only", "Light + prior", "Light + bathy", "Light + all three"),
+    RMSE_km = round(c(rmse_km(fit_lo), rmse_km(fit_hemi),
+                      rmse_km(fit_bathy), rmse_km(fit_full)))
+  ),
+  caption   = "RMSE vs. the known true track (km).",
+  col.names = c("Model", "RMSE (km)")
+)
+```
+
+Both the hemisphere prior and the bathymetry floor reduce RMSE by ~29× independently.
+Their combination, plus the SST term, provides redundancy: if one data stream is
+absent or unreliable, the others continue to anchor the track.
+
+---
+
+## Building a bespoke sensor with `function_source()` and `custom_rule()`
+
+Any callable `fn(lon, lat, date)` can be promoted to a `tf_source`, and any
+`fn(obs, expected)` can be promoted to a `tf_rule`.  Here we sketch a
+**Poisson acoustic detection count** rule, where the tag logs how many detections
+it picks up from a fixed hydrophone mooring and the expected count decays
+exponentially with distance.
+
+```{r custom_demo, eval = FALSE}
+# ---------- source ----------------------------------------------------
+mooring_lon <- 152; mooring_lat <- -28
+
+detection_source <- function_source(function(lon, lat, date) {
+  dist_km <- gc_dist(lon, lat, mooring_lon, mooring_lat)
+  100 * exp(-dist_km / 300)   # expected detections; 300 km scale length
+})
+
+# ---------- rule ------------------------------------------------------
+poisson_rule <- custom_rule(function(obs, expected) {
+  lam <- pmax(expected, 1e-6)        # guard log(0)
+  obs * log(lam) - lam               # Poisson log-likelihood (omits log(obs!))
+})
+
+# ---------- term ------------------------------------------------------
+acoustic_tag <- data.frame(
+  time  = times,
+  value = rpois(length(times), lambda = 40)  # ~40 detections / 10 min
+)
+term_acoustic <- location_term(
+  "acoustic",
+  tag    = acoustic_tag,
+  reduce = "sum",            # total detections per 12 h knot
+  source = detection_source,
+  rule   = poisson_rule,
+  weight = 0.5               # down-weight relative to light
+)
+
+# Add to any TwilightFreeGrid() call:
+fit_acoustic <- TwilightFreeGrid(
+  date_time = times, light = obs, grid = grid,
+  calibration = cal, likelihood_params = lp,
+  step_hours = 12, diffusion = 200,
+  terms = list(term_hemi, term_acoustic)
+)
+```
+
+The same pattern works for geomagnetic inclination (IGRF model wrapped in
+`function_source()`), tidal-phase constraints, accelerometer activity budgets, or any
+other channel that provides a scalar observation per knot and a predicted field over
+the grid.
+
+---
+
+## Quick-reference: building blocks
+
+| Function | Purpose |
+|----------|---------|
+| `location_term()` | Bundle tag channel + source + rule into one additive term |
+| `hemisphere_prior()` | Soft/hard hemispheric prior, keyed by calendar date |
+| `bathy_source()` | Seafloor depth (ETOPO or user raster) for dive constraints |
+| `sst_source()` | Daily NOAA OISST (or user raster) for temperature matching |
+| `raster_source()` | Any static or date-indexed `RasterLayer` as a source |
+| `function_source()` | Promote `fn(lon, lat, date)` to a `tf_source` |
+| `floor_rule()` | One-sided hard/soft constraint (dive depth, altitude, terrain) |
+| `student_rule()` | Robust symmetric match (SST, salinity) |
+| `gaussian_rule()` | Symmetric squared-error match |
+| `ceiling_rule()` | Mirror of `floor_rule()`: upper-bound constraint |
+| `mask_rule()` | Binary permit/forbid mask (sea vs. land) |
+| `custom_rule()` | Bring-your-own `function(obs, expected)` rule |
+| `identity_rule()` | Pass-through for sources already in log-density form |
