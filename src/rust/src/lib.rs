@@ -162,6 +162,10 @@ fn interpolate_lon(lon1: f64, lon2: f64, f: f64) -> f64 {
 /// @param mask_nrow Number of rows in the mask raster
 /// @param mask_ncol Number of columns in the mask raster
 /// @param seed Integer seed for reproducibility; 0 means non-deterministic (uses entropy)
+/// @param aux_logl_flat Flattened aux log-likelihood raster (k_steps * nrow * ncol, row-major); empty for no aux
+/// @param aux_extent c(xmin, xmax, ymin, ymax) extent of the aux raster
+/// @param aux_nrow Number of rows in the aux raster
+/// @param aux_ncol Number of columns in the aux raster
 /// @name run_particle_filter
 /// @export
 #[extendr]
@@ -184,6 +188,10 @@ fn run_particle_filter(
     mask_nrow: i32,
     mask_ncol: i32,
     seed: f64,
+    aux_logl_flat: Vec<f64>,
+    aux_extent: Vec<f64>,
+    aux_nrow: i32,
+    aux_ncol: i32,
 ) -> List {
     let n = n_particles as usize;
     let num_obs = unix_times.len();
@@ -368,6 +376,23 @@ fn run_particle_filter(
                 let current_prob_slab = particles[i].prob_slab;
                 let den = (1.0 - current_prob_slab) * spike_density + current_prob_slab * slab_density;
                 log_lik += den.ln();
+            }
+
+            if !aux_logl_flat.is_empty() && aux_extent.len() == 4 {
+                let aux_ncols = aux_ncol as usize;
+                let aux_nrows = aux_nrow as usize;
+                let xmin = aux_extent[0]; let xmax = aux_extent[1];
+                let ymax = aux_extent[3];
+                let cell_w = (xmax - xmin) / aux_ncols as f64;
+                let cell_h = (aux_extent[3] - aux_extent[2]) / aux_nrows as f64;
+                let p_lon = particles[i].lon;
+                let p_lat = particles[i].lat;
+                let col_idx = ((p_lon - xmin) / cell_w).floor() as usize;
+                let row_idx = ((ymax - p_lat) / cell_h).floor() as usize;
+                let col_idx = col_idx.min(aux_ncols.saturating_sub(1));
+                let row_idx = row_idx.min(aux_nrows.saturating_sub(1));
+                let n_cells = aux_nrows * aux_ncols;
+                log_lik += aux_logl_flat[k * n_cells + row_idx * aux_ncols + col_idx];
             }
 
             log_weights[i] = log_lik;

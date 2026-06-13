@@ -20,6 +20,7 @@
 #' @param likelihood_params Likelihood parameters c(lambda, max_light, prob_slab). If NULL, auto-calibrates from data.
 #' @param spatial_mask Optional `RasterLayer` (from the `raster` package) used to constrain particles to valid habitat (e.g. sea vs land). Cells with value 0 (or `NA`) are treated as impassable. If `NULL`, no spatial constraint is applied.
 #' @param seed Integer seed for reproducibility; if `NULL` the engine is non-deterministic. Pass the same integer to reproduce identical tracks. Note that `TwilightFreeGrid` uses a deterministic HMM and needs no seed.
+#' @param terms Optional list of `location_term()` objects (priors, SST, bathymetry, masks). Each contributes an additive log-likelihood evaluated on a spatial raster that is combined with the light likelihood per particle. Defaults to `list()` (light only).
 #' @importFrom stats quantile lm coef
 #' @export
 #' @return A `TwilightFreeTrack` object
@@ -35,7 +36,8 @@ TwilightFreeSMC <- function(date_time, light,
                            calibration = NULL,
                            likelihood_params = NULL,
                            spatial_mask = NULL,
-                           seed = NULL) {
+                           seed = NULL,
+                           terms = list()) {
   
   if(!inherits(date_time, "POSIXct")) {
     stop("date_time must be POSIXct")
@@ -165,6 +167,40 @@ TwilightFreeSMC <- function(date_time, light,
 
   unix_times <- as.numeric(date_time)
 
+  # Replicate Rust's knot-time formula so build_aux_matrix gets the right times
+  t_start_r <- unix_times[1]
+  t_end_r   <- unix_times[length(unix_times)]
+  k_steps_r <- ceiling((t_end_r - t_start_r) / (step_hours * 3600)) + 1
+  t_step_r  <- if (k_steps_r > 1) (t_end_r - t_start_r) / (k_steps_r - 1) else 0
+  knot_times_r <- t_start_r + (0:(k_steps_r - 1)) * t_step_r
+
+  # Build aux log-likelihood raster for sensor-fusion terms
+  if (length(terms) > 0) {
+    if (!is.null(spatial_mask)) {
+      # Piggyback on the mask grid as the aux domain
+      aux_lon <- raster::coordinates(spatial_mask)[, 1]
+      aux_lat <- raster::coordinates(spatial_mask)[, 2]
+      a_nrow  <- as.integer(raster::nrow(spatial_mask))
+      a_ncol  <- as.integer(raster::ncol(spatial_mask))
+      ext     <- raster::extent(spatial_mask)
+      a_ext   <- c(ext@xmin, ext@xmax, ext@ymin, ext@ymax)
+    } else {
+      # Default 2-degree global grid (top-to-bottom, left-to-right)
+      a_ncol    <- 180L; a_nrow <- 90L
+      a_ext     <- c(-180, 180, -90, 90)
+      lon_cents <- seq(-179, 179, by = 2)
+      lat_cents <- seq(89, -89, by = -2)
+      aux_lon   <- rep(lon_cents, times = a_nrow)
+      aux_lat   <- rep(lat_cents, each = a_ncol)
+    }
+    aux_mat <- build_aux_matrix(terms, aux_lon, aux_lat, knot_times_r)
+    a_flat  <- as.numeric(t(aux_mat))
+  } else {
+    a_flat <- numeric(0)
+    a_ext  <- numeric(0)
+    a_nrow <- 0L; a_ncol <- 0L
+  }
+
   # extendr rejects NA_real_ for f64 params; use NaN as the "unknown" sentinel
   # (Rust checks with .is_nan(), which catches both NA and NaN)
   end_lat_f <- if (is.na(end_lat)) NaN else as.numeric(end_lat)
@@ -188,7 +224,11 @@ TwilightFreeSMC <- function(date_time, light,
     mask_extent = m_ext,
     mask_nrow = m_nrow,
     mask_ncol = m_ncol,
-    seed = as.numeric(if (is.null(seed)) 0 else seed)
+    seed = as.numeric(if (is.null(seed)) 0 else seed),
+    aux_logl_flat = a_flat,
+    aux_extent = a_ext,
+    aux_nrow = a_nrow,
+    aux_ncol = a_ncol
   )
   
   res$obs_light <- light

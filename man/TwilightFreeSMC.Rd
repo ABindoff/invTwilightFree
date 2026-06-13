@@ -21,7 +21,8 @@ TwilightFreeSMC(
   calibration = NULL,
   likelihood_params = NULL,
   spatial_mask = NULL,
-  seed = NULL
+  seed = NULL,
+  terms = list()
 )
 }
 \arguments{
@@ -58,6 +59,8 @@ TwilightFreeSMC(
 \item{spatial_mask}{Optional `RasterLayer` (from the `raster` package) used to constrain particles to valid habitat (e.g. sea vs land). Cells with value 0 (or `NA`) are treated as impassable. If `NULL`, no spatial constraint is applied.}
 
 \item{seed}{Integer seed for reproducibility; if `NULL` the engine is non-deterministic. Pass the same integer to reproduce identical tracks. Note that `TwilightFreeGrid` uses a deterministic HMM and needs no seed.}
+
+\item{terms}{Optional list of `location_term()` objects (priors, SST, bathymetry, masks). Each contributes an additive log-likelihood evaluated on a spatial raster that is combined with the light likelihood per particle. Defaults to `list()` (light only).}
 }
 \value{
 A `TwilightFreeTrack` object

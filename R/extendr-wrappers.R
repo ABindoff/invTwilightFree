@@ -47,9 +47,13 @@ light_log_likelihood <- function(obs_light, expected_light, lambda, max_light, p
 #' @param mask_nrow Number of rows in the mask raster
 #' @param mask_ncol Number of columns in the mask raster
 #' @param seed Integer seed for reproducibility; 0 means non-deterministic (uses entropy)
+#' @param aux_logl_flat Flattened aux log-likelihood raster (k_steps * nrow * ncol, row-major); empty for no aux
+#' @param aux_extent c(xmin, xmax, ymin, ymax) extent of the aux raster
+#' @param aux_nrow Number of rows in the aux raster
+#' @param aux_ncol Number of columns in the aux raster
 #' @name run_particle_filter
 #' @export
-run_particle_filter <- function(unix_times, obs_light, n_particles, start_lat, start_lon, end_lat, end_lon, method, step_hours, diffusion, trans_prob, calibration, likelihood_params, mask_matrix, mask_extent, mask_nrow, mask_ncol, seed) .Call(wrap__run_particle_filter, unix_times, obs_light, n_particles, start_lat, start_lon, end_lat, end_lon, method, step_hours, diffusion, trans_prob, calibration, likelihood_params, mask_matrix, mask_extent, mask_nrow, mask_ncol, seed)
+run_particle_filter <- function(unix_times, obs_light, n_particles, start_lat, start_lon, end_lat, end_lon, method, step_hours, diffusion, trans_prob, calibration, likelihood_params, mask_matrix, mask_extent, mask_nrow, mask_ncol, seed, aux_logl_flat, aux_extent, aux_nrow, aux_ncol) .Call(wrap__run_particle_filter, unix_times, obs_light, n_particles, start_lat, start_lon, end_lat, end_lon, method, step_hours, diffusion, trans_prob, calibration, likelihood_params, mask_matrix, mask_extent, mask_nrow, mask_ncol, seed, aux_logl_flat, aux_extent, aux_nrow, aux_ncol)
 
 #' Evaluate the spike-and-slab log-likelihood over a grid of locations
 #'

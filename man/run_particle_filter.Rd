@@ -22,7 +22,11 @@ run_particle_filter(
   mask_extent,
   mask_nrow,
   mask_ncol,
-  seed
+  seed,
+  aux_logl_flat,
+  aux_extent,
+  aux_nrow,
+  aux_ncol
 )
 }
 \arguments{
@@ -61,6 +65,14 @@ run_particle_filter(
 \item{mask_ncol}{Number of columns in the mask raster}
 
 \item{seed}{Integer seed for reproducibility; 0 means non-deterministic (uses entropy)}
+
+\item{aux_logl_flat}{Flattened aux log-likelihood raster (k_steps * nrow * ncol, row-major); empty for no aux}
+
+\item{aux_extent}{c(xmin, xmax, ymin, ymax) extent of the aux raster}
+
+\item{aux_nrow}{Number of rows in the aux raster}
+
+\item{aux_ncol}{Number of columns in the aux raster}
 }
 \description{
 Core SMC engine for TwilightFree track reconstruction.
