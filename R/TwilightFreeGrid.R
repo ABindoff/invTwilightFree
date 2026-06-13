@@ -135,6 +135,15 @@ TwilightFreeGrid <- function(date_time, light, grid,
   # Call Rust grid HMM solver
   lon_vec <- raster::coordinates(grid)[, 1]
   lat_vec <- raster::coordinates(grid)[, 2]
+
+  # Honour NA cells set by makeGrid(mask=): exclude them from the HMM candidate set.
+  # Without this filter, land cells (NA) remain valid HMM states and the MAP can
+  # be placed over land even when a sea mask was requested.
+  valid_cells <- !is.na(raster::values(grid))
+  if (!all(valid_cells)) {
+    lon_vec <- lon_vec[valid_cells]
+    lat_vec <- lat_vec[valid_cells]
+  }
   
   # Ensure valid data
   valid_obs <- !is.na(process_light)
