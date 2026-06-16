@@ -1,6 +1,6 @@
 #' Build a spatial grid for use with TwilightFreeGrid
 #'
-#' Creates a \code{RasterLayer} over a lon/lat bounding box at a specified
+#' Creates a \code{SpatRaster} over a lon/lat bounding box at a specified
 #' resolution, optionally masked to retain only sea or land cells.
 #'
 #' @param lon Numeric vector of length 2: \code{c(min_lon, max_lon)} in decimal degrees.
@@ -9,7 +9,7 @@
 #' @param mask Character string: \code{"none"} (default, no masking), \code{"sea"} (retain
 #'   only ocean cells), or \code{"land"} (retain only land cells).
 #'
-#' @return A \code{RasterLayer} (WGS84) with value 1 in retained cells and \code{NA} in
+#' @return A \code{SpatRaster} (WGS84) with value 1 in retained cells and \code{NA} in
 #'   masked cells. Pass directly to the \code{grid} argument of \link{TwilightFreeGrid}.
 #'
 #' @details
@@ -18,7 +18,7 @@
 #' whose centre falls inside a country polygon are treated as land; all others
 #' are treated as sea.  Small islands may be missed at coarse resolutions.
 #'
-#' @import sp
+#' @importFrom terra rast values rasterize vect
 #' @export
 #' @examples
 #' \dontrun{
@@ -33,21 +33,21 @@ makeGrid <- function(lon, lat, cell.size, mask = c("none", "sea", "land")) {
   if (lat[1] >= lat[2]) stop("lat[1] must be less than lat[2]")
   if (cell.size <= 0) stop("cell.size must be positive")
 
-  r <- raster::raster(
-    xmn = lon[1], xmx = lon[2],
-    ymn = lat[1], ymx = lat[2],
+  r <- terra::rast(
+    xmin = lon[1], xmax = lon[2],
+    ymin = lat[1], ymax = lat[2],
     resolution = cell.size,
-    crs = "+proj=longlat +datum=WGS84"
+    crs = "EPSG:4326"
   )
-  raster::values(r) <- 1
+  terra::values(r) <- 1
 
   if (mask != "none") {
-    land <- rnaturalearth::ne_countries(scale = "medium", returnclass = "sp")
-    land_r <- raster::rasterize(land, r, field = 1, background = 0)
+    land <- rnaturalearth::ne_countries(scale = "medium", returnclass = "sf")
+    land_r <- terra::rasterize(terra::vect(land), r, field = 1, background = 0)
     if (mask == "sea") {
-      r[land_r[] == 1] <- NA
+      r[terra::values(land_r) == 1] <- NA
     } else {
-      r[land_r[] == 0] <- NA
+      r[terra::values(land_r) == 0] <- NA
     }
   }
 

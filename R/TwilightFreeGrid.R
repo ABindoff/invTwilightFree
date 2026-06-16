@@ -2,7 +2,7 @@
 #' 
 #' @param date_time A vector of POSIXct dates
 #' @param light A vector of light observations
-#' @param grid A RasterLayer or SpatialPixels object defining the grid (from TwilightFree::makeGrid)
+#' @param grid A \code{SpatRaster} defining the grid (from \link{makeGrid})
 #' @param start_lat Initial latitude (Decimal Degrees)
 #' @param start_lon Initial longitude (Decimal Degrees)
 #' @param end_lat Final latitude (optional, defaults to NA)
@@ -133,13 +133,13 @@ TwilightFreeGrid <- function(date_time, light, grid,
   }
   
   # Call Rust grid HMM solver
-  lon_vec <- raster::coordinates(grid)[, 1]
-  lat_vec <- raster::coordinates(grid)[, 2]
+  lon_vec <- terra::crds(grid)[, 1]
+  lat_vec <- terra::crds(grid)[, 2]
 
   # Honour NA cells set by makeGrid(mask=): exclude them from the HMM candidate set.
   # Without this filter, land cells (NA) remain valid HMM states and the MAP can
   # be placed over land even when a sea mask was requested.
-  valid_cells <- !is.na(raster::values(grid))
+  valid_cells <- !is.na(terra::values(grid))
   if (!all(valid_cells)) {
     lon_vec <- lon_vec[valid_cells]
     lat_vec <- lat_vec[valid_cells]

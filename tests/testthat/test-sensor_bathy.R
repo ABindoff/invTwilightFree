@@ -51,11 +51,11 @@ test_that("floor_rule returns a tf_rule", {
 })
 
 test_that("bathy_source returns positive-down depths from an injected raster", {
-  skip_if_not_installed("raster")
-  r <- raster::raster(nrows = 2, ncols = 2,
-                      xmn = 149, xmx = 151, ymn = -46, ymx = -44)
-  # raster fills by row from the top-left: top row (lat -44.5), then bottom (-45.5)
-  raster::values(r) <- c(50, 1500, 0, 3000)
+  skip_if_not_installed("terra")
+  r <- terra::rast(nrows = 2, ncols = 2,
+                   xmin = 149, xmax = 151, ymin = -46, ymax = -44)
+  # terra fills by row from the top-left: top row (lat -44.5), then bottom (-45.5)
+  terra::values(r) <- c(50, 1500, 0, 3000)
   bs <- bathy_source(rast = r)
   # point in the top-left cell (lon 149.5, lat -44.5) -> 50 m
   d <- bs(lon = c(149.5, 150.5, 149.5), lat = c(-44.5, -44.5, -45.5))
@@ -64,10 +64,10 @@ test_that("bathy_source returns positive-down depths from an injected raster", {
 })
 
 test_that("bathy_source + floor_rule compose into a depth feasibility surface", {
-  skip_if_not_installed("raster")
-  r <- raster::raster(nrows = 1, ncols = 3,
-                      xmn = 0, xmx = 3, ymn = 0, ymx = 1)
-  raster::values(r) <- c(100, 800, 2000)           # seabed depth per cell
+  skip_if_not_installed("terra")
+  r <- terra::rast(nrows = 1, ncols = 3,
+                   xmin = 0, xmax = 3, ymin = 0, ymax = 1)
+  terra::values(r) <- c(100, 800, 2000)           # seabed depth per cell
   bs <- bathy_source(rast = r)
   fr <- floor_rule()
   depth <- bs(lon = c(0.5, 1.5, 2.5), lat = c(0.5, 0.5, 0.5))

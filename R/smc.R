@@ -152,20 +152,19 @@ TwilightFreeSMC <- function(date_time, light,
   
   # Process spatial mask
   if (!is.null(spatial_mask)) {
-    if (!inherits(spatial_mask, "RasterLayer")) stop("spatial_mask must be a RasterLayer from the 'raster' package")
-    
+    if (!inherits(spatial_mask, "SpatRaster")) stop("spatial_mask must be a SpatRaster from the 'terra' package")
+
     # Extract dimensions and extent
-    m_nrow <- as.integer(raster::nrow(spatial_mask))
-    m_ncol <- as.integer(raster::ncol(spatial_mask))
-    
+    m_nrow <- as.integer(terra::nrow(spatial_mask))
+    m_ncol <- as.integer(terra::ncol(spatial_mask))
+
     # Extent is xmin, xmax, ymin, ymax
-    ext <- raster::extent(spatial_mask)
-    m_ext <- as.numeric(c(ext@xmin, ext@xmax, ext@ymin, ext@ymax))
-    
-    # Extract values. raster::as.matrix returns a matrix where rows are y and cols are x.
-    # We transpose to get it in a flat vector that Rust can index via (row * ncol + col) 
-    # where row 0 is the top (ymax). raster values are inherently top-to-bottom.
-    m_mat <- as.numeric(t(raster::as.matrix(spatial_mask)))
+    m_ext <- as.numeric(c(terra::xmin(spatial_mask), terra::xmax(spatial_mask),
+                           terra::ymin(spatial_mask), terra::ymax(spatial_mask)))
+
+    # as.matrix(r, wide=TRUE) returns rows north-to-south (row 1 = ymax), same
+    # layout as raster::as.matrix. Transpose so Rust indexes via (row * ncol + col).
+    m_mat <- as.numeric(t(as.matrix(spatial_mask, wide = TRUE)))
     m_mat[is.na(m_mat)] <- 0.0
   } else {
     m_nrow <- 0L
@@ -187,12 +186,12 @@ TwilightFreeSMC <- function(date_time, light,
   if (length(terms) > 0) {
     if (!is.null(spatial_mask)) {
       # Piggyback on the mask grid as the aux domain
-      aux_lon <- raster::coordinates(spatial_mask)[, 1]
-      aux_lat <- raster::coordinates(spatial_mask)[, 2]
-      a_nrow  <- as.integer(raster::nrow(spatial_mask))
-      a_ncol  <- as.integer(raster::ncol(spatial_mask))
-      ext     <- raster::extent(spatial_mask)
-      a_ext   <- c(ext@xmin, ext@xmax, ext@ymin, ext@ymax)
+      aux_lon <- terra::crds(spatial_mask)[, 1]
+      aux_lat <- terra::crds(spatial_mask)[, 2]
+      a_nrow  <- as.integer(terra::nrow(spatial_mask))
+      a_ncol  <- as.integer(terra::ncol(spatial_mask))
+      a_ext   <- c(terra::xmin(spatial_mask), terra::xmax(spatial_mask),
+                   terra::ymin(spatial_mask), terra::ymax(spatial_mask))
     } else {
       # Default 2-degree global grid (top-to-bottom, left-to-right)
       a_ncol    <- 180L; a_nrow <- 90L

@@ -6,8 +6,14 @@ Authors@R: c(
     person("Aidan", "Bindoff", email = "aidan.bindoff@utas.edu.au",
            role = c("aut", "cre")),
     person("Simon", "Wotherspoon", role = "aut"))
-Description: Geolocation using ambient light data from GLS tags. Robust to
-    substantial noise (shading).
+Description: Reconstructs animal tracks from continuous light records recorded
+    by archival geolocator (GLS) tags. Uses a Sequential Monte Carlo particle
+    filter with a spike-and-slab likelihood that directly models the full light
+    curve rather than discrete twilight events, making it robust to substantial
+    shading noise and sensor anomalies. An optional grid-based hidden Markov
+    model supports auxiliary sensor fusion (bathymetry, sea surface temperature,
+    spatial priors) via an additive log-likelihood framework. Core computations
+    are implemented in Rust for speed.
 License: GPL (>= 3)
 Encoding: UTF-8
 LazyData: true
@@ -17,13 +23,9 @@ Imports:
     sf,
     rnaturalearth,
     gridExtra,
-    SGAT,
-    viridisLite,
-    BAStag,
-    raster
+    terra
 Depends:
-    R (>= 4.2),
-    sp
+    R (>= 4.2)
 Suggests:
     knitr,
     rmarkdown,
@@ -32,7 +34,6 @@ Suggests:
     testthat (>= 3.0.0),
     marmap,
     rerddap
-Remotes: SWotherspoon/SGAT, SWotherspoon/BAStag
 Config/rextendr/version: 0.5.0
 SystemRequirements: Cargo (Rust's package manager), rustc >= 1.65.0, xz
 VignetteBuilder: knitr

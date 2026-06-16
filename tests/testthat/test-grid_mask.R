@@ -2,15 +2,13 @@
 # Uses a manually constructed raster so no rnaturalearthdata download is needed.
 
 test_that("TwilightFreeGrid excludes NA (masked) grid cells from HMM candidate set", {
-  skip_if_not_installed("raster")
+  skip_if_not_installed("terra")
 
   # 1-row, 4-column raster: cells at lon = -15, -5, +5, +15 (10-degree spacing).
   # Middle two cells (lon = -5, +5) are valid (value = 1); outer two are masked (NA).
   # After the fix, lon_vec/lat_vec passed to Rust should contain only {-5, +5}.
-  r <- raster::raster(
-    matrix(c(NA, 1, 1, NA), nrow = 1),
-    xmn = -20, xmx = 20, ymn = 27, ymx = 33
-  )
+  r <- terra::rast(nrows = 1, ncols = 4, xmin = -20, xmax = 20, ymin = 27, ymax = 33)
+  terra::values(r) <- c(NA, 1, 1, NA)
 
   times  <- seq(as.POSIXct("2024-06-01", tz = "UTC"),
                 as.POSIXct("2024-06-02", tz = "UTC"),
@@ -43,18 +41,14 @@ test_that("TwilightFreeGrid excludes NA (masked) grid cells from HMM candidate s
 })
 
 test_that("unmasked grid (all cells valid) is unaffected by the NA filter", {
-  skip_if_not_installed("raster")
+  skip_if_not_installed("terra")
 
   # All four cells have value 1 — no NAs — so behaviour must be identical to
   # the pre-fix code path.
-  r_full <- raster::raster(
-    matrix(c(1, 1, 1, 1), nrow = 1),
-    xmn = -20, xmx = 20, ymn = 27, ymx = 33
-  )
-  r_na <- raster::raster(
-    matrix(c(NA, 1, 1, NA), nrow = 1),
-    xmn = -20, xmx = 20, ymn = 27, ymx = 33
-  )
+  r_full <- terra::rast(nrows = 1, ncols = 4, xmin = -20, xmax = 20, ymin = 27, ymax = 33)
+  terra::values(r_full) <- c(1, 1, 1, 1)
+  r_na <- terra::rast(nrows = 1, ncols = 4, xmin = -20, xmax = 20, ymin = 27, ymax = 33)
+  terra::values(r_na) <- c(NA, 1, 1, NA)
 
   times  <- seq(as.POSIXct("2024-06-01", tz = "UTC"),
                 as.POSIXct("2024-06-02", tz = "UTC"),

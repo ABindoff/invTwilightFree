@@ -37,12 +37,10 @@ test_that("bathy floor_rule removes MAP excursions over shallow water", {
   grid <- makeGrid(lon = c(-40, 40), lat = c(25, 35), cell.size = 5)
 
   # 1x2 bathy raster: west cell = 50 m (shallow), east cell = 2000 m (deep).
-  # raster::extract() assigns any lon < 0 to the west cell (value 50) and any
+  # terra::extract() assigns any lon < 0 to the west cell (value 50) and any
   # lon >= 0 to the east cell (value 2000), matching grid cell centres exactly.
-  bathy_r <- raster::raster(
-    matrix(c(50, 2000), nrow = 1),
-    xmn = -40, xmx = 40, ymn = 25, ymx = 35
-  )
+  bathy_r <- terra::rast(nrows = 1, ncols = 2, xmin = -40, xmax = 40, ymin = 25, ymax = 35)
+  terra::values(bathy_r) <- c(50, 2000)
 
   # ---- Light only ----
   fit_lo <- TwilightFreeGrid(

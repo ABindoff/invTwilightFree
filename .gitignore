@@ -14,3 +14,4 @@ Rplots.pdf
 src/rust/target
 src/*.o
 src/*.dll
+.repro/

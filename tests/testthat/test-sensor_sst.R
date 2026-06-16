@@ -42,10 +42,10 @@ test_that("student_rule returns a tf_rule", {
 })
 
 test_that("sst_source with a static raster returns SST and ignores date", {
-  skip_if_not_installed("raster")
-  r <- raster::raster(nrows = 2, ncols = 2,
-                      xmn = 149, xmx = 151, ymn = -46, ymx = -44)
-  raster::values(r) <- c(11.2, 11.8, 12.1, 12.6)   # top row first
+  skip_if_not_installed("terra")
+  r <- terra::rast(nrows = 2, ncols = 2,
+                   xmin = 149, xmax = 151, ymin = -46, ymax = -44)
+  terra::values(r) <- c(11.2, 11.8, 12.1, 12.6)   # top row first
   ss <- sst_source(rast = r)
   a <- ss(lon = c(149.5, 150.5), lat = c(-44.5, -45.5), date = as.Date("2024-01-15"))
   b <- ss(lon = c(149.5, 150.5), lat = c(-44.5, -45.5), date = as.Date("2024-07-15"))
@@ -55,10 +55,10 @@ test_that("sst_source with a static raster returns SST and ignores date", {
 })
 
 test_that("sst_source with a date-keyed list selects the right layer", {
-  skip_if_not_installed("raster")
+  skip_if_not_installed("terra")
   mk <- function(v) {
-    r <- raster::raster(nrows = 1, ncols = 1, xmn = 149, xmx = 151, ymn = -46, ymx = -44)
-    raster::values(r) <- v
+    r <- terra::rast(nrows = 1, ncols = 1, xmin = 149, xmax = 151, ymin = -46, ymax = -44)
+    terra::values(r) <- v
     r
   }
   layers <- list("2024-01-15" = mk(18.0), "2024-07-15" = mk(9.0))
@@ -68,9 +68,9 @@ test_that("sst_source with a date-keyed list selects the right layer", {
 })
 
 test_that("sst_source composes with student_rule into an SST match surface", {
-  skip_if_not_installed("raster")
-  r <- raster::raster(nrows = 1, ncols = 3, xmn = 0, xmx = 3, ymn = 0, ymx = 1)
-  raster::values(r) <- c(10, 14, 18)               # SST per cell
+  skip_if_not_installed("terra")
+  r <- terra::rast(nrows = 1, ncols = 3, xmin = 0, xmax = 3, ymin = 0, ymax = 1)
+  terra::values(r) <- c(10, 14, 18)               # SST per cell
   ss <- sst_source(rast = r)
   sr <- student_rule(sd = 1.5, df = 4)
   sst <- ss(lon = c(0.5, 1.5, 2.5), lat = c(0.5, 0.5, 0.5), date = Sys.Date())

@@ -1,7 +1,7 @@
 # Sensor-fusion plumbing: assemble a list of location_term() objects into the
 # additive log-likelihood matrix that TwilightFreeGrid() hands to the Rust HMM.
 # A "term" is (tag channel -> per-knot value) x (environmental field) x (rule).
-# Priors and masks have no tag channel. See HANDOFF_2_SENSOR_FUSION.md.
+# Priors and masks have no tag channel.
 
 #' Define an auxiliary location term for sensor fusion
 #'

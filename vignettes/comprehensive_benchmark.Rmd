@@ -7,16 +7,19 @@ vignette: >
   %\VignetteEncoding{UTF-8}
 ---
 
-```{r setup, include = FALSE}
+```{r, include = FALSE}
 knitr::opts_chunk$set(
   collapse = TRUE,
   comment = "#>",
   fig.width = 12,
   fig.height = 12,
-  out.width = "100%"
+  out.width = "100%",
+  eval = identical(Sys.getenv("NOT_CRAN"), "true")
 )
-# Ensure the local version of the package is loaded
-pkgload::load_all("..")
+```
+
+```{r setup, message=FALSE, warning=FALSE}
+library(invTwilightFree)
 library(ggplot2)
 library(patchwork)
 library(dplyr)

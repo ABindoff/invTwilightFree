@@ -68,8 +68,8 @@ test_that("a missing tag reading contributes the term's `missing` value", {
   # The first knot is at midnight June 20, so the first interval is noon-to-midnight
   # June 19. Observation at 23:00 June 19 falls inside it.
   tag <- data.frame(time = as.POSIXct("2024-06-19 23:00", tz = "UTC"), value = 12)
-  r <- raster::raster(nrows = 1, ncols = 2, xmn = 0, xmx = 2, ymn = 0, ymx = 1)
-  raster::values(r) <- c(12, 20)
+  r <- terra::rast(nrows = 1, ncols = 2, xmin = 0, xmax = 2, ymin = 0, ymax = 1)
+  terra::values(r) <- c(12, 20)
   term <- location_term("sst", tag = tag, reduce = "median",
                         source = sst_source(rast = r),
                         rule = student_rule(sd = 1.5),
