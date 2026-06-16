@@ -119,8 +119,12 @@ struct Particle {
     prob_slab: f64,
 }
 
-fn get_solar_zenith(t: f64, l: f64, phi_deg: f64) -> f64 {
-    let phi = phi_deg.to_radians();
+/// Time-only solar ephemeris, shared across all particles at a given timestamp.
+/// Returns (sin(delta), cos(delta), right ascension, GMST). The heavy trig here
+/// depends only on the observation time, not on position, so it is computed once
+/// per observation and reused for every particle.
+#[inline]
+fn solar_ephemeris(t: f64) -> (f64, f64, f64, f64) {
     let d = (t - 946728000.0) / 86400.0;
     let g = (357.529 + 0.98560028 * d).to_radians();
     let q = 280.459 + 0.98564736 * d;
@@ -129,10 +133,25 @@ fn get_solar_zenith(t: f64, l: f64, phi_deg: f64) -> f64 {
     let delta = (e.sin() * l_sun.sin()).asin();
     let ra = f64::atan2(e.cos() * l_sun.sin(), l_sun.cos());
     let gmst = (18.697374558 + 24.06570982441908 * d) * 15.0_f64.to_radians();
+    (delta.sin(), delta.cos(), ra, gmst)
+}
+
+/// Solar zenith (degrees) from a precomputed time-only ephemeris and a position.
+/// Bit-identical to the inline computation in get_solar_zenith: the only change is
+/// that the time-dependent terms are passed in rather than recomputed per particle.
+#[inline]
+fn zenith_from_ephem(sin_delta: f64, cos_delta: f64, ra: f64, gmst: f64, l: f64, phi_deg: f64) -> f64 {
+    let phi = phi_deg.to_radians();
     let lmst = gmst + l.to_radians();
     let h = lmst - ra;
-    let cos_z = phi.sin() * delta.sin() + phi.cos() * delta.cos() * h.cos();
+    let cos_z = phi.sin() * sin_delta + phi.cos() * cos_delta * h.cos();
     cos_z.acos().to_degrees()
+}
+
+#[allow(dead_code)] // kept as the reference implementation; hot loops use the split form
+fn get_solar_zenith(t: f64, l: f64, phi_deg: f64) -> f64 {
+    let (sin_delta, cos_delta, ra, gmst) = solar_ephemeris(t);
+    zenith_from_ephem(sin_delta, cos_delta, ra, gmst, l, phi_deg)
 }
 
 fn interpolate_lon(lon1: f64, lon2: f64, f: f64) -> f64 {
@@ -270,6 +289,18 @@ fn run_particle_filter(
 
     let mut obs_idx = 0; // track which observation we are up to
 
+    // Precompute the time-only solar ephemeris once per observation. Reused across
+    // all particles in both the forward likelihood loop and the final diagnostics
+    // pass; the per-particle code then only does the local hour-angle and cosine.
+    let mut eph_sd = vec![0.0; num_obs];
+    let mut eph_cd = vec![0.0; num_obs];
+    let mut eph_ra = vec![0.0; num_obs];
+    let mut eph_gmst = vec![0.0; num_obs];
+    for j in 0..num_obs {
+        let (sd, cd, ra, gmst) = solar_ephemeris(unix_times[j]);
+        eph_sd[j] = sd; eph_cd[j] = cd; eph_ra[j] = ra; eph_gmst[j] = gmst;
+    }
+
     // FORWARD FILTERING
     for k in 1..k_steps {
         let t_prev = knot_times[k-1];
@@ -386,7 +417,7 @@ fn run_particle_filter(
                 let p_lat = particles[i].lat * f + hist_lat[k-1][i] * (1.0 - f); // linear approx
                 let p_lon = interpolate_lon(hist_lon[k-1][i], particles[i].lon, f);
                 
-                let zenith = get_solar_zenith(unix_times[j], p_lon, p_lat);
+                let zenith = zenith_from_ephem(eph_sd[j], eph_cd[j], eph_ra[j], eph_gmst[j], p_lon, p_lat);
                 let expected = (intercept - slope * zenith).max(0.0).min(max_light);
                 let obs = obs_light[j];
                 let spike = spike_density(obs, expected, lambda);
@@ -666,7 +697,7 @@ fn run_particle_filter(
             
             let current_prob_slab = smooth_prob_slab[k][i] * f + smooth_prob_slab[k-1][i] * (1.0 - f);
             
-            let z = get_solar_zenith(unix_times[j], p_lon, p_lat);
+            let z = zenith_from_ephem(eph_sd[j], eph_cd[j], eph_ra[j], eph_gmst[j], p_lon, p_lat);
             mean_z += z * w;
             
             let exp = (intercept - slope * z).max(0.0).min(max_light);
@@ -739,11 +770,16 @@ fn eval_logpk_grid(
     let slab_density = 1.0 / max_light;
 
     let mut logl = vec![0.0; n];
-    
+
+    // Precompute time-only ephemeris once per observation, reused across grid cells.
+    let eph: Vec<(f64, f64, f64, f64)> =
+        (0..num_obs).map(|j| solar_ephemeris(unix_times[j])).collect();
+
     for i in 0..n {
         let mut sum_logl = 0.0;
         for j in 0..num_obs {
-            let zenith = get_solar_zenith(unix_times[j], lon[i], lat[i]);
+            let (sd, cd, ra, gmst) = eph[j];
+            let zenith = zenith_from_ephem(sd, cd, ra, gmst, lon[i], lat[i]);
             let expected = (intercept - slope * zenith).max(0.0).min(max_light);
             let obs = obs_light[j];
             let spike = spike_density(obs, expected, lambda);
@@ -794,6 +830,11 @@ fn run_grid_hmm(
     let lat_rad: Vec<f64> = lat.iter().map(|x| x.to_radians()).collect();
 
     let mut logpk = vec![vec![0.0; n]; k_steps];
+
+    // Precompute time-only ephemeris once per observation, reused across grid cells.
+    let eph: Vec<(f64, f64, f64, f64)> =
+        (0..obs_times.len()).map(|j| solar_ephemeris(obs_times[j])).collect();
+
     for k in 0..k_steps {
         let t_curr = knot_times[k];
         let t_prev = if k == 0 { t_curr - (knot_times[1] - knot_times[0]) } else { knot_times[k-1] };
@@ -810,7 +851,8 @@ fn run_grid_hmm(
         for i in 0..n {
             let mut sum_logl = 0.0;
             for &j in &obs_in_k {
-                let zenith = get_solar_zenith(obs_times[j], lon[i], lat[i]);
+                let (sd, cd, ra, gmst) = eph[j];
+                let zenith = zenith_from_ephem(sd, cd, ra, gmst, lon[i], lat[i]);
                 let expected = (intercept - slope * zenith).max(0.0).min(max_light);
                 let obs = obs_light[j];
                 let spike = spike_density(obs, expected, lambda);
