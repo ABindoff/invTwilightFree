@@ -17,11 +17,11 @@ makeGrid(lon, lat, cell.size, mask = c("none", "sea", "land"))
 only ocean cells), or \code{"land"} (retain only land cells).}
 }
 \value{
-A \code{RasterLayer} (WGS84) with value 1 in retained cells and \code{NA} in
+A \code{SpatRaster} (WGS84) with value 1 in retained cells and \code{NA} in
   masked cells. Pass directly to the \code{grid} argument of \link{TwilightFreeGrid}.
 }
 \description{
-Creates a \code{RasterLayer} over a lon/lat bounding box at a specified
+Creates a \code{SpatRaster} over a lon/lat bounding box at a specified
 resolution, optionally masked to retain only sea or land cells.
 }
 \details{

@@ -29,7 +29,7 @@ longitudes must then use the same convention (the seal example spanning
 \item{pad}{Degrees of padding added around the coordinate bounding box when
 fetching, to avoid edge `NA`s. Default `1`.}
 
-\item{rast}{Optional user-supplied \code{RasterLayer} of seafloor depth
+\item{rast}{Optional user-supplied \code{SpatRaster} of seafloor depth
 (positive-down, land as `0` or `NA`). If given, no download occurs and this
 raster is used directly. Mainly for offline use, custom bathymetry, and
 testing.}
@@ -65,9 +65,9 @@ depth <- bs(lon = c(150, 155), lat = c(-45, -40), date = NULL)
 }
 
 # Offline: supply a synthetic depth raster (positive-down).
-r <- raster::raster(nrows = 2, ncols = 2,
-                    xmn = 149, xmx = 151, ymn = -46, ymx = -44)
-raster::values(r) <- c(50, 1500, 0, 3000)   # metres, land = 0
+r <- terra::rast(nrows = 2, ncols = 2,
+                 xmin = 149, xmax = 151, ymin = -46, ymax = -44)
+terra::values(r) <- c(50, 1500, 0, 3000)   # metres, land = 0
 bs <- bathy_source(rast = r)
 bs(lon = c(149.5, 150.5), lat = c(-45.5, -44.5))
 }

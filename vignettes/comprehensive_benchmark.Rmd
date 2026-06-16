@@ -14,7 +14,8 @@ knitr::opts_chunk$set(
   fig.width = 12,
   fig.height = 12,
   out.width = "100%",
-  eval = identical(Sys.getenv("NOT_CRAN"), "true")
+  eval = identical(Sys.getenv("NOT_CRAN"), "true") &&
+    file.exists("../scratch/simulated_seal_light_scenarios.rds")
 )
 ```
 
@@ -24,11 +25,11 @@ library(ggplot2)
 library(patchwork)
 library(dplyr)
 library(tidyr)
-library(geosphere)
 
-# Helper for distance calculation
+# Helper for distance calculation (great-circle, km)
 get_dist <- function(lon1, lat1, lon2, lat2) {
-  distHaversine(cbind(lon1, lat1), cbind(lon2, lat2)) / 1000
+  r <- pi / 180
+  acos(pmin(1, sin(lat1*r)*sin(lat2*r) + cos(lat1*r)*cos(lat2*r)*cos((lon2-lon1)*r))) * 6371
 }
 
 # Helper to unwrap caches
@@ -66,7 +67,7 @@ get_bench_data <- function(scenario = "ideal", track_data) {
   
   # Fit invTF (Grid)
   t_inv_grid <- system.time({
-    grid <- TwilightFree::makeGrid(lon=c(130, 185), lat=c(-85, -40), cell.size=1.0, mask="sea")
+    grid <- makeGrid(lon=c(130, 185), lat=c(-85, -40), cell.size=1.0, mask="sea")
     fit_inv_grid <- TwilightFreeGrid(
       date_time = as.POSIXct(track_data$time, tz="UTC"), 
       light = track_data[[light_col]], 

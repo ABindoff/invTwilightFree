@@ -7,7 +7,7 @@
 prior_raster(r, is_log = TRUE)
 }
 \arguments{
-\item{r}{A \code{RasterLayer} whose values are log-prior densities (if
+\item{r}{A \code{SpatRaster} whose values are log-prior densities (if
 `is_log = TRUE`, the default) or non-negative densities.}
 
 \item{is_log}{If `TRUE` (default) values are already on the log scale. If
@@ -23,9 +23,9 @@ If `is_log = FALSE` the values are treated as non-negative densities and
 logged before being passed to the rule (zeros become `-Inf`).
 }
 \examples{
-r <- raster::raster(nrows = 1, ncols = 2,
-                    xmn = 0, xmx = 2, ymn = 0, ymx = 1)
-raster::values(r) <- c(log(0.8), log(0.2))   # log-prior
+r <- terra::rast(nrows = 1, ncols = 2,
+                 xmin = 0, xmax = 2, ymin = 0, ymax = 1)
+terra::values(r) <- c(log(0.8), log(0.2))   # log-prior
 ps <- prior_raster(r)
 ps(lon = c(0.5, 1.5), lat = c(0.5, 0.5), date = NULL)
 }

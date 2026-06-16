@@ -26,7 +26,7 @@ TwilightFreeGrid(
 
 \item{light}{A vector of light observations}
 
-\item{grid}{A RasterLayer or SpatialPixels object defining the grid (from TwilightFree::makeGrid)}
+\item{grid}{A \code{SpatRaster} defining the grid (from \link{makeGrid})}
 
 \item{start_lat}{Initial latitude (Decimal Degrees)}
 

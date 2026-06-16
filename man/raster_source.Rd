@@ -7,24 +7,24 @@
 raster_source(r)
 }
 \arguments{
-\item{r}{A \code{RasterLayer} (used for every date) or a non-empty named list
-of \code{RasterLayer}s keyed by \code{"YYYY-MM-DD"} strings.}
+\item{r}{A \code{SpatRaster} (used for every date) or a non-empty named list
+of \code{SpatRaster}s keyed by \code{"YYYY-MM-DD"} strings.}
 }
 \value{
 A source closure of class `tf_source`: `function(lon, lat, date)`
   returning a numeric vector of field values at the candidate cells.
 }
 \description{
-A thin adapter that turns a \code{RasterLayer} (static, date-independent) or
-a named list of \code{RasterLayer}s (keyed by \code{"YYYY-MM-DD"}) into a
+A thin adapter that turns a \code{SpatRaster} (static, date-independent) or
+a named list of \code{SpatRaster}s (keyed by \code{"YYYY-MM-DD"}) into a
 `tf_source` closure for use in [location_term()]. This is the generic
 "bring your own raster" entry point; [sst_source()] and [bathy_source()] are
 specialised versions that also handle fetching.
 }
 \examples{
-r <- raster::raster(nrows = 1, ncols = 2,
-                    xmn = 0, xmx = 2, ymn = 0, ymx = 1)
-raster::values(r) <- c(5.0, 10.0)
+r <- terra::rast(nrows = 1, ncols = 2,
+                 xmin = 0, xmax = 2, ymin = 0, ymax = 1)
+terra::values(r) <- c(5.0, 10.0)
 rs <- raster_source(r)
 rs(lon = c(0.5, 1.5), lat = c(0.5, 0.5), date = Sys.Date())
 }

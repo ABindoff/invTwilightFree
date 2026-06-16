@@ -21,12 +21,11 @@ knitr::opts_chunk$set(
 ```{r setup, message=FALSE, warning=FALSE}
 library(invTwilightFree)
 library(ggplot2)
-library(dplyr)
-library(geosphere)
 
-# Distance helper
+# Distance helper (great-circle, km)
 get_dist <- function(lon1, lat1, lon2, lat2) {
-  distHaversine(cbind(lon1, lat1), cbind(lon2, lat2)) / 1000
+  r <- pi / 180
+  acos(pmin(1, sin(lat1*r)*sin(lat2*r) + cos(lat1*r)*cos(lat2*r)*cos((lon2-lon1)*r))) * 6371
 }
 ```
 
@@ -107,10 +106,10 @@ grid_tuning <- expand.grid(
 )
 
 grid_tuning$RMSE <- sapply(1:nrow(grid_tuning), function(i) {
-  grid <- TwilightFree::makeGrid(lon=c(130, 155), lat=c(-50, -30), 
-                                  cell.size=grid_tuning$cell_size[i], mask="sea")
+  grid <- makeGrid(lon=c(130, 155), lat=c(-50, -30),
+                   cell.size=grid_tuning$cell_size[i], mask="sea")
   fit <- TwilightFreeGrid(
-    date_time = easy_track$time, 
+    date_time = easy_track$time,
     light = easy_track$light,
     grid = grid,
     start_lat = -42.8, start_lon = 147.3,
@@ -118,12 +117,11 @@ grid_tuning$RMSE <- sapply(1:nrow(grid_tuning), function(i) {
     step_hours = grid_tuning$step_hours[i],
     diffusion = 60
   )
-  
-  trip_mat <- TwilightFree::trip(fit$fit)
+
   df <- data.frame(
-    Time = as.POSIXct(trip_mat[, 1], origin="1970-01-01", tz="UTC"),
-    Lon = trip_mat[, 2],
-    Lat = trip_mat[, 3]
+    Time = as.POSIXct(fit$fit$time, origin="1970-01-01", tz="UTC"),
+    Lon = fit$fit$lon,
+    Lat = fit$fit$lat
   )
   
   t_lat <- approx(as.numeric(easy_track$time), easy_track$true_lat, xout = as.numeric(df$Time))$y
@@ -165,15 +163,10 @@ print(paste("Manual Calibration RMSE:", round(rmse_manual, 2), "km"))
 
 We now run `FLightR` and `SGAT` on this same track to see their baseline accuracy.
 
-```{r comparison_easy}
-# FLightR
-# (Requires twilight detection)
-tw <- TwilightFree::thresholdPath(easy_track$time, easy_track$light, threshold=10)
-# ... abbreviated FLightR setup ...
-
-# SGAT
-# (Using simple threshold-based initialization)
-# ... abbreviated SGAT setup ...
+```{r comparison_easy, eval = FALSE}
+# FLightR and SGAT comparison requires the original TwilightFree package
+# (not on CRAN) for twilight extraction. See benchmark_comparison.Rmd for a
+# full comparison using pre-computed caches.
 ```
 
 ## Visual Audit of Best Fits
@@ -191,8 +184,8 @@ fit_guided_best <- TwilightFreeSMC(
   diffusion = best_guided$diffusion
 )
 
-grid_best_obj <- TwilightFree::makeGrid(lon=c(130, 155), lat=c(-50, -30), 
-                                    cell.size=best_grid$cell_size, mask="sea")
+grid_best_obj <- makeGrid(lon=c(130, 155), lat=c(-50, -30),
+                          cell.size=best_grid$cell_size, mask="sea")
 fit_grid_best <- TwilightFreeGrid(
   date_time = easy_track$time, light = easy_track$light,
   grid = grid_best_obj,
@@ -202,11 +195,10 @@ fit_grid_best <- TwilightFreeGrid(
   diffusion = 60
 )
 
-trip_best <- TwilightFree::trip(fit_grid_best$fit)
 df_grid_best <- data.frame(
-  Time = as.POSIXct(trip_best[, 1], origin="1970-01-01", tz="UTC"),
-  Lon = trip_best[, 2],
-  Lat = trip_best[, 3]
+  Time = as.POSIXct(fit_grid_best$fit$time, origin="1970-01-01", tz="UTC"),
+  Lon = fit_grid_best$fit$lon,
+  Lat = fit_grid_best$fit$lat
 )
 
 df_guided_best <- data.frame(

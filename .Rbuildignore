@@ -17,5 +17,11 @@
 ^src/Makevars$
 ^src/Makevars\.win$
 ^vignettes/.*\.rds$
+^vignettes/benchmark_comparison\.Rmd$
+^vignettes/benchmark_comparison\.html$
+^vignettes/benchmark_comparison2\.Rmd$
+^vignettes/benchmark_comparison2\.html$
+^vignettes/comprehensive_benchmark\.Rmd$
+^vignettes/comprehensive_benchmark\.html$
 ^scratch$
 ^data-raw$

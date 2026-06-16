@@ -14,7 +14,8 @@ knitr::opts_chunk$set(
   fig.width = 12,
   fig.height = 10,
   out.width = "100%",
-  eval = identical(Sys.getenv("NOT_CRAN"), "true")
+  eval = identical(Sys.getenv("NOT_CRAN"), "true") &&
+    file.exists("../scratch/simulated_seal_light_scenarios.rds")
 )
 ```
 
@@ -28,7 +29,7 @@ We evaluate three layers of realistic light-field noise:
 3. **ALAN:** Artificial Light At Night spikes near the colony (ship traffic).
 
 ```{r setup, message=FALSE, warning=FALSE}
-devtools::load_all("..")
+library(invTwilightFree)
 library(ggplot2)
 library(patchwork)
 library(dplyr)
@@ -63,7 +64,7 @@ get_paths <- function(scenario = "cloudy") {
   
   # Fit invTF (Grid)
   t_inv_grid <- system.time({
-    grid <- TwilightFree::makeGrid(lon=c(130, 185), lat=c(-85, -40), cell.size=2, mask="sea")
+    grid <- makeGrid(lon=c(130, 185), lat=c(-85, -40), cell.size=2, mask="sea")
     fit_inv_grid <- TwilightFreeGrid(
       date_time = as.POSIXct(track_data$time, tz="UTC"), 
       light = track_data[[light_col]], 
@@ -103,8 +104,7 @@ get_paths <- function(scenario = "cloudy") {
   }
   
   df_inv_guided <- data.frame(Time = fit_inv_guided$knot_times, Lat = fit_inv_guided$lat, Lon = fit_inv_guided$lon, Method = "invTF (Guided)")
-  trip_grid <- TwilightFree::trip(fit_inv_grid$fit)
-  df_inv_grid <- data.frame(Time = as.POSIXct(trip_grid[, 1], origin="1970-01-01", tz="UTC"), Lat = trip_grid[, 2], Lon = trip_grid[, 3], Method = "invTF (Grid)")
+  df_inv_grid <- data.frame(Time = as.POSIXct(fit_inv_grid$fit$time, origin="1970-01-01", tz="UTC"), Lat = fit_inv_grid$fit$lat, Lon = fit_inv_grid$fit$lon, Method = "invTF (Grid)")
   df_flightr <- data.frame(Time = obj_flightr$Results$Quantiles$time, Lat = obj_flightr$Results$Quantiles$Medianlat, Lon = obj_flightr$Results$Quantiles$Medianlon, Method = "FLightR")
   
   # Handle SGAT differences

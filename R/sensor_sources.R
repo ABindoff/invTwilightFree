@@ -86,7 +86,7 @@ bathy_source <- function(resolution = 4, cache_dir = NULL,
 
   src <- function(lon, lat, date = NULL) {
     if (is.null(state$rast)) fetch(lon, lat)
-    as.numeric(terra::extract(state$rast, cbind(lon, lat))[, 2])
+    as.numeric(terra::extract(state$rast, cbind(lon, lat))[, 1])
   }
   class(src) <- c("tf_source", "function")
   src
@@ -185,13 +185,13 @@ sst_source <- function(dataset = "ncdcOisst21Agg_LonPM180",
 
   src <- function(lon, lat, date) {
     if (!is.null(state$static)) {
-      return(as.numeric(terra::extract(state$static, cbind(lon, lat))[, 2]))
+      return(as.numeric(terra::extract(state$static, cbind(lon, lat))[, 1]))
     }
     key <- as.character(as.Date(date))
     if (is.null(state$layers[[key]])) {
       state$layers[[key]] <- fetch_day(key, lon, lat)
     }
-    as.numeric(terra::extract(state$layers[[key]], cbind(lon, lat))[, 2])
+    as.numeric(terra::extract(state$layers[[key]], cbind(lon, lat))[, 1])
   }
   class(src) <- c("tf_source", "function")
   src
@@ -228,12 +228,12 @@ raster_source <- function(r) {
   }
   src <- function(lon, lat, date = NULL) {
     if (is_layer) {
-      return(as.numeric(terra::extract(r, cbind(lon, lat))[, 2]))
+      return(as.numeric(terra::extract(r, cbind(lon, lat))[, 1]))
     }
     key <- as.character(as.Date(date))
     layer <- r[[key]]
     if (is.null(layer)) stop("no raster layer for date ", key)
-    as.numeric(terra::extract(layer, cbind(lon, lat))[, 2])
+    as.numeric(terra::extract(layer, cbind(lon, lat))[, 1])
   }
   class(src) <- c("tf_source", "function")
   src
@@ -293,7 +293,7 @@ function_source <- function(fn) {
 prior_raster <- function(r, is_log = TRUE) {
   if (!inherits(r, "SpatRaster")) stop("`r` must be a SpatRaster")
   src <- function(lon, lat, date = NULL) {
-    vals <- as.numeric(terra::extract(r, cbind(lon, lat))[, 2])
+    vals <- as.numeric(terra::extract(r, cbind(lon, lat))[, 1])
     if (!isTRUE(is_log)) {
       vals <- ifelse(is.na(vals) | vals <= 0, -Inf, log(vals))
     }
@@ -347,7 +347,7 @@ sea_mask_source <- function() {
 
   src <- function(lon, lat, date = NULL) {
     if (is.null(state$rast)) build(lon, lat)
-    as.numeric(terra::extract(state$rast, cbind(lon, lat))[, 2])
+    as.numeric(terra::extract(state$rast, cbind(lon, lat))[, 1])
   }
   class(src) <- c("tf_source", "function")
   src

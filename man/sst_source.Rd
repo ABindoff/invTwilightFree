@@ -27,8 +27,8 @@ fetching, to avoid edge `NA`s. Default `0.5`.}
 \item{cache_dir}{Reserved for on-disk caching of fetched layers; `rerddap`
 also keeps its own HTTP cache. Default `NULL`.}
 
-\item{rast}{Optional offline data: a single \code{RasterLayer} (used for all
-dates) or a named list of \code{RasterLayer}s keyed by `"YYYY-MM-DD"`. If
+\item{rast}{Optional offline data: a single \code{SpatRaster} (used for all
+dates) or a named list of \code{SpatRaster}s keyed by `"YYYY-MM-DD"`. If
 given, no download occurs. Mainly for offline use and testing.}
 }
 \value{
@@ -48,8 +48,8 @@ land.
 \details{
 `rerddap` is an optional dependency; this function errors with an install
 hint if it is missing. Supply your own data via `rast` (a single
-\code{RasterLayer} used for all dates, e.g. a climatology, or a named list of
-\code{RasterLayer}s keyed by \code{"YYYY-MM-DD"}) to work offline or use a
+\code{SpatRaster} used for all dates, e.g. a climatology, or a named list of
+\code{SpatRaster}s keyed by \code{"YYYY-MM-DD"}) to work offline or use a
 different product.
 
 Longitude convention: the default dataset uses -180..180. For a grid that
@@ -68,9 +68,9 @@ sst <- ss(lon = c(150, 152), lat = c(-45, -44), date = as.Date("2024-01-15"))
 }
 
 # Offline: a single static layer used for every date.
-r <- raster::raster(nrows = 2, ncols = 2,
-                    xmn = 149, xmx = 151, ymn = -46, ymx = -44)
-raster::values(r) <- c(11.2, 11.8, 12.1, 12.6)
+r <- terra::rast(nrows = 2, ncols = 2,
+                 xmin = 149, xmax = 151, ymin = -46, ymax = -44)
+terra::values(r) <- c(11.2, 11.8, 12.1, 12.6)
 ss <- sst_source(rast = r)
 ss(lon = c(149.5, 150.5), lat = c(-44.5, -45.5), date = Sys.Date())
 }

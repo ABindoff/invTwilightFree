@@ -49,7 +49,6 @@ in the wrong hemisphere.
 
 ```{r simulate}
 library(invTwilightFree)
-library(raster)
 
 true_lon <- 150
 true_lat <- -25
@@ -149,11 +148,9 @@ shallow for a 500 m dive and receive −∞ log-likelihood from `floor_rule()`.
 
 ```{r fit_bathy, message = FALSE}
 # Synthetic depth raster: northern cells (lat > 0) = 200 m; southern (lat < 0) = 4 000 m.
-# raster() fills rows top-to-bottom, so the first matrix row maps to the northern band.
-depth_r <- raster::raster(
-  matrix(c(200, 4000), ncol = 1),
-  xmn = 145, xmx = 155, ymn = -35, ymx = 35
-)
+# nrows=2, top row (north) = 200 m, bottom row (south) = 4 000 m.
+depth_r <- terra::rast(nrows = 2, ncols = 1, xmin = 145, xmax = 155, ymin = -35, ymax = 35)
+terra::values(depth_r) <- c(200, 4000)
 
 dive_df    <- data.frame(time = times, value = 500)
 term_bathy <- location_term(
