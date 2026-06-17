@@ -1085,7 +1085,7 @@ fn run_grid_hmm(
                     if gamma[i * num_states + s] > -1e29 {
                         let w = (gamma[i * num_states + s] - log_denom).exp();
                         prob_states[s] += w;
-                        
+
                         let g_state = gamma[i * num_states + s];
                         if g_state > best_g {
                             best_g = g_state;
@@ -1094,8 +1094,19 @@ fn run_grid_hmm(
                     }
                 }
             }
+        } else {
+            // Marginal collapsed (movement sigma too small for grid resolution).
+            // Fall back to the light-only MAP cell so output is at least
+            // in the right hemisphere rather than silently returning cell 0.
+            let mut best_logl = -1e30;
+            for i in 0..n {
+                if logpk[k][i] > best_logl {
+                    best_logl = logpk[k][i];
+                    best_i = i;
+                }
+            }
         }
-        
+
         best_lat[k] = lat[best_i];
         best_lon[k] = lon[best_i];
         for s in 0..num_states {
