@@ -45,9 +45,9 @@ makeGrid <- function(lon, lat, cell.size, mask = c("none", "sea", "land")) {
     land <- rnaturalearth::ne_countries(scale = "medium", returnclass = "sf")
     land_r <- terra::rasterize(terra::vect(land), r, field = 1, background = 0)
     if (mask == "sea") {
-      r[terra::values(land_r) == 1] <- NA
+      r <- terra::mask(r, land_r, maskvalues = 1)
     } else {
-      r[terra::values(land_r) == 0] <- NA
+      r <- terra::mask(r, land_r, maskvalues = 0)
     }
   }
 
