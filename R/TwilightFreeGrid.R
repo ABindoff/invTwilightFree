@@ -17,6 +17,11 @@
 #'   bathymetry, masks). Each contributes an additive log-likelihood over grid
 #'   cells that is combined with the light likelihood. Defaults to `list()`
 #'   (light only), which reproduces the original behaviour exactly.
+#' @param calibrate If `TRUE` and both endpoint locations are known, the tag clock
+#'   is calibrated from the known deployment and retrieval fixes (via
+#'   [calibrate_clock_from_endpoints()]) and the observation times are corrected
+#'   before fitting. The fitted clock model is returned as `$clock`. Default
+#'   `FALSE` (no correction).
 #' @importFrom stats quantile lm coef
 #' @export
 TwilightFreeGrid <- function(date_time, light, grid,
@@ -28,14 +33,24 @@ TwilightFreeGrid <- function(date_time, light, grid,
                              trans_prob = NULL,
                              calibration = NULL,
                              likelihood_params = NULL,
-                             terms = list()) {
-  
+                             terms = list(),
+                             calibrate = FALSE) {
+
   if(!inherits(date_time, "POSIXct")) stop("date_time must be POSIXct")
-  
+
   # Ensure sorted
   ord <- order(date_time)
   date_time <- date_time[ord]
   light <- light[ord]
+
+  # Optional clock calibration from the known endpoints (engine-agnostic): correct
+  # the timestamps before auto-calibration and knot construction.
+  clock <- NULL
+  if (isTRUE(calibrate)) {
+    clock <- calibrate_clock_from_endpoints(date_time, light, start_lon, start_lat,
+                                            end_lon, end_lat, calibration, likelihood_params)
+    if (!is.null(clock)) date_time <- clock$correct(date_time)
+  }
   
   if (length(diffusion) > 1 && is.null(trans_prob)) {
     # Default to a "sticky" behavior: 90% chance to stay in current state
@@ -168,15 +183,67 @@ TwilightFreeGrid <- function(date_time, light, grid,
     aux_logl = aux_flat
   )
   
-  # Return combined object
+  # Return combined object. `log_z` is the grid HMM's log marginal likelihood
+  # (model evidence) from the forward pass; use it for model comparison, e.g. a
+  # hemisphere Bayes factor by differencing log_z across opposite priors.
   res <- list(
     fit = fit,
     grid = grid,
     obs_light = light,
     obs_times = date_time,
     calibration = calibration,
-    likelihood_params = likelihood_params
+    likelihood_params = likelihood_params,
+    log_z = fit$log_z,
+    clock = clock,                # NULL unless calibrate = TRUE; the fitted clock model
+    cell_lon = lon_vec,           # candidate cell coordinates (after any NA-mask filter)
+    cell_lat = lat_vec            # columns of fit$posterior correspond to these cells
   )
   class(res) <- "TwilightFreeGrid"
   return(res)
+}
+
+#' Per-knot posterior over grid cells from a TwilightFreeGrid fit
+#'
+#' Returns the exact marginal posterior of location at each knot (from the grid
+#' HMM forward-backward pass), reshaped to a `K` by `n` matrix aligned with the
+#' candidate cell coordinates. Use for honest uncertainty (credible regions,
+#' coverage) and for simulation-based calibration.
+#'
+#' @param fit A `TwilightFreeGrid` object.
+#' @return A list with `lon`, `lat` (length-`n` candidate cell coordinates) and
+#'   `P` (a `K` by `n` matrix; row `k` is the posterior over cells at knot `k`,
+#'   summing to 1 where the knot is identified).
+#' @export
+grid_posterior <- function(fit) {
+  stopifnot(inherits(fit, "TwilightFreeGrid"))
+  n <- length(fit$cell_lon)
+  K <- length(fit$fit$time)
+  P <- matrix(fit$fit$posterior, nrow = K, ncol = n, byrow = TRUE)
+  list(lon = fit$cell_lon, lat = fit$cell_lat, P = P)
+}
+
+#' @method print TwilightFreeGrid
+#' @export
+print.TwilightFreeGrid <- function(x, ...) {
+  n_knots <- length(x$fit$time)
+  start_t <- as.POSIXct(min(x$fit$time), origin = "1970-01-01", tz = "UTC")
+  end_t   <- as.POSIXct(max(x$fit$time), origin = "1970-01-01", tz = "UTC")
+
+  cat("\nTwilightFree Grid HMM Track\n")
+  cat("=============================================\n")
+  cat(sprintf("Light Observations: %d\n", length(x$obs_times)))
+  cat(sprintf("Track Knots:        %d\n", n_knots))
+  cat(sprintf("Duration:           %.2f days\n", diff(range(x$fit$time)) / 86400))
+  cat(sprintf("Start:              %s\n", format(start_t)))
+  cat(sprintf("End:                %s\n", format(end_t)))
+  cat("---------------------------------------------\n")
+  cat(sprintf("Mean Lat:           %.2f\n", mean(x$fit$lat)))
+  cat(sprintf("Mean Lon:           %.2f\n", mean(x$fit$lon)))
+  if (!is.null(x$log_z)) cat(sprintf("Log evidence (logZ): %.1f\n", x$log_z))
+  if (!is.null(x$clock)) {
+    cat("---------------------------------------------\n")
+    for (line in format_clock(x$clock)) cat(line, "\n", sep = "")
+  }
+  cat("=============================================\n")
+  invisible(x)
 }

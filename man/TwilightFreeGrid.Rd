@@ -18,7 +18,8 @@ TwilightFreeGrid(
   trans_prob = NULL,
   calibration = NULL,
   likelihood_params = NULL,
-  terms = list()
+  terms = list(),
+  calibrate = FALSE
 )
 }
 \arguments{
@@ -52,6 +53,12 @@ TwilightFreeGrid(
 bathymetry, masks). Each contributes an additive log-likelihood over grid
 cells that is combined with the light likelihood. Defaults to `list()`
 (light only), which reproduces the original behaviour exactly.}
+
+\item{calibrate}{If `TRUE` and both endpoint locations are known, the tag clock
+is calibrated from the known deployment and retrieval fixes (via
+[calibrate_clock_from_endpoints()]) and the observation times are corrected
+before fitting. The fitted clock model is returned as `$clock`. Default
+`FALSE` (no correction).}
 }
 \description{
 Reconstruct animal tracks using SGAT::essie and continuous likelihood
