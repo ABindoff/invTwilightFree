@@ -20,6 +20,7 @@ cfg <- utils::modifyList(list(
   coarse_res = 1.0, mesh_pad = 12.0, inflate = 1.5,
   surrogate_diffusion = 45.0,   # km/sqrt(day) used ONLY to build the surrogate
   a_pop = 3.0, g0 = 1e-3, h0 = 1e-3,   # vague hyperprior (sig2 is in km^2 ~ O(1000))
+  a0 = 1e-3, b0 = 1e-3,                 # vague per-track prior for the INDEPENDENT (unpooled) fit
   sweeps = 3000L, burn = 1000L, thin = 3L,
   seed = 1L
 ), CFG)
@@ -216,25 +217,27 @@ cat(sprintf("individuals built. knots per ind: %s\n", paste(Kv, collapse=",")))
 # ---------------------------------------------------------------------
 # Hierarchical Gibbs
 # ---------------------------------------------------------------------
-run_hier <- function(mode = cfg$mode, sweeps = cfg$sweeps, burn = cfg$burn, thin = cfg$thin) {
+run_hier <- function(mode = cfg$mode, sweeps = cfg$sweeps, burn = cfg$burn, thin = cfg$thin,
+                     pool = TRUE) {
   X <- lapply(IND, function(E) E$init())
   sig2 <- sapply(IND, function(E) ss_track(E, E$init())/(E$K-1))   # data-driven start
   beta <- 1
   keep_pop <- numeric(0); keep_sig <- matrix(0, 0, N)
-  acc <- 0L; att <- 0L
   for (s in seq_len(sweeps)) {
     for (i in seq_len(N)) {
       E <- IND[[i]]
       if (mode == "block") X[[i]] <- update_block(E, X[[i]], sig2[i], cfg$block_len)
       else                 X[[i]] <- update_gold(E, X[[i]], sig2[i])
-      # conjugate per-individual movement variance
       SS <- ss_track(E, X[[i]])
-      sig2[i] <- 1/rgamma(1, shape = cfg$a_pop + (E$K-1), rate = beta + 0.5*SS)
+      # conjugate per-individual movement variance. pool=TRUE shares the population
+      # scale beta (partial pooling); pool=FALSE uses a vague per-track prior (no
+      # information shared between individuals).
+      if (pool) sig2[i] <- 1/rgamma(1, shape = cfg$a_pop + (E$K-1), rate = beta + 0.5*SS)
+      else      sig2[i] <- 1/rgamma(1, shape = cfg$a0    + (E$K-1), rate = cfg$b0 + 0.5*SS)
     }
-    # conjugate population level
-    beta <- rgamma(1, shape = cfg$g0 + N*cfg$a_pop, rate = cfg$h0 + sum(1/sig2))
+    if (pool) beta <- rgamma(1, shape = cfg$g0 + N*cfg$a_pop, rate = cfg$h0 + sum(1/sig2))
     if (s > burn && (s-burn) %% thin == 0) {
-      keep_pop <- c(keep_pop, sqrt(beta/(cfg$a_pop-1)))   # implied pop movement variance scale
+      keep_pop <- c(keep_pop, if (pool) sqrt(beta/(cfg$a_pop-1)) else NA_real_)
       keep_sig <- rbind(keep_sig, sqrt(sig2))              # per-ind per-step km sd
     }
   }
@@ -244,7 +247,55 @@ run_hier <- function(mode = cfg$mode, sweeps = cfg$sweeps, burn = cfg$burn, thin
 dt_day <- IND[[1]]$S$tstep/86400
 summ_run <- function(R) list(pop = R$pop/sqrt(dt_day), sig = R$sig/sqrt(dt_day))
 
-if (isTRUE(cfg$compare)) {
+if (isTRUE(cfg$benefit)) {
+  message("running POOLED (hierarchical) fit ...")
+  set.seed(cfg$seed)
+  Rp <- summ_run(run_hier("block", cfg$sweeps, cfg$burn, cfg$thin, pool = TRUE))
+  message("running INDEPENDENT (unpooled) fit ...")
+  set.seed(cfg$seed)
+  Ri <- summ_run(run_hier("block", cfg$sweeps, cfg$burn, cfg$thin, pool = FALSE))
+  truth <- PAN$sd_day_true
+  est_p <- colMeans(Rp$sig); est_i <- colMeans(Ri$sig)
+  rmse <- function(e) sqrt(mean((e - truth)^2)); mae <- function(e) mean(abs(e - truth))
+  cat("\n=== POOLING BENEFIT: per-individual movement sigma_i (km/day) ===\n")
+  cat(sprintf("%-6s %8s %10s %10s\n", "ind", "truth", "independent", "pooled"))
+  for (k in seq_len(N))
+    cat(sprintf("%-6d %8.1f %10.1f %10.1f\n", k, truth[k], est_i[k], est_p[k]))
+  cat(sprintf("\nRMSE vs truth:  independent %.2f  |  pooled %.2f   (%.0f%% lower)\n",
+      rmse(est_i), rmse(est_p), 100 * (1 - rmse(est_p) / rmse(est_i))))
+  cat(sprintf("MAE  vs truth:  independent %.2f  |  pooled %.2f\n", mae(est_i), mae(est_p)))
+  cat(sprintf("SD of estimates: independent %.2f | pooled %.2f (truth SD %.2f)\n",
+      sd(est_i), sd(est_p), sd(truth)))
+
+  out_png <- if (exists("OUT_PNG")) OUT_PNG else "pooling_benefit.png"
+  grDevices::png(out_png, width = 1150, height = 500)
+  graphics::par(mfrow = c(1, 2), mar = c(4, 4, 3, 1))
+  # (a) estimate vs truth, with indep->pooled shrinkage arrows
+  rng <- range(c(truth, est_i, est_p))
+  plot(truth, est_i, pch = 19, col = "firebrick", xlim = rng, ylim = rng,
+       xlab = "true sigma_i (km/day)", ylab = "estimate (km/day)",
+       main = "estimate vs truth")
+  graphics::abline(0, 1, col = "grey60", lwd = 2)
+  graphics::segments(truth, est_i, truth, est_p, col = "grey70")
+  graphics::points(truth, est_p, pch = 19, col = "royalblue")
+  graphics::legend("topleft", c("independent", "pooled", "1:1"),
+                   col = c("firebrick", "royalblue", "grey60"), pch = c(19, 19, NA),
+                   lwd = c(NA, NA, 2), bty = "n")
+  # (b) shrinkage toward the population level
+  o <- order(truth)
+  plot(seq_len(N), est_i[o], pch = 19, col = "firebrick", ylim = rng,
+       xlab = "individual (ordered by truth)", ylab = "sigma_i (km/day)",
+       main = "shrinkage toward the population")
+  graphics::segments(seq_len(N), est_i[o], seq_len(N), est_p[o], col = "grey70")
+  graphics::points(seq_len(N), est_p[o], pch = 19, col = "royalblue")
+  graphics::points(seq_len(N), truth[o], pch = 4, col = "black", lwd = 2)
+  graphics::abline(h = mean(Rp$pop, na.rm = TRUE), col = "royalblue", lty = 2)
+  graphics::legend("topleft", c("independent", "pooled", "truth", "pop level"),
+                   col = c("firebrick", "royalblue", "black", "royalblue"),
+                   pch = c(19, 19, 4, NA), lty = c(NA, NA, NA, 2), bty = "n")
+  grDevices::dev.off()
+  cat(sprintf("\nsaved %s\n", normalizePath(out_png)))
+} else if (isTRUE(cfg$compare)) {
   gs <- if (!is.null(cfg$gold_sweeps)) cfg$gold_sweeps else cfg$sweeps
   message(sprintf("running GOLD hierarchy (%d sweeps) ...", gs))
   set.seed(cfg$seed); CTR$calls <- 0L; CTR$emit <- 0L; t0 <- Sys.time()

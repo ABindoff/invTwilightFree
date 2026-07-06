@@ -102,9 +102,30 @@ where the validated per-individual block kernel is reused thousands of times.
 
 Reproduce: `Rscript -e 'CFG <- list(compare=TRUE, sweeps=4000L, gold_sweeps=6000L); source("da_hier.R")'`
 
-Not yet done: a demonstration of the *pooling benefit* — that hierarchical
-short-track `σ_i` estimates beat independent per-track fits (the scientific
-payoff of the hierarchy).
+### H3 — the pooling benefit (`figures/h3_pooling_benefit.png`)
+Hierarchical (pooled) vs independent (unpooled, vague per-track prior) estimates
+of `σ_i`, on the **same** panel with the **same** track kernel and initialisation
+— only the `σ_i` prior differs (pooled shares the population level `β`;
+independent uses a vague per-track `InvGamma`).
+
+On N=12 short (7-day) tracks, where movement scale is weakly identified from
+light:
+- **Independent** estimates are unstable — 2–49 km/day for truths of 25–71,
+  several collapsing near zero (the classic degeneracy of a vague variance prior
+  on weak data: a smooth track → tiny increments → `σ→0`, with nothing to stop
+  it).
+- **Pooled** shrinks each individual toward the *learned* population level (~31),
+  because individuals with more signal lift the shared `β` and regularise the rest.
+- **RMSE vs truth 27% lower** (27.2 → 19.8); estimate SD 17.5 → 3.2.
+
+Honest nuance: with data this weak, pooling approaches *complete* pooling
+(over-shrinks the true heterogeneity). Movement scale is fundamentally hard to
+identify from light alone, so neither method recovers it well; pooling's value is
+**regularisation and stability** — turning unusable independent estimates into
+stable ones. That is precisely the argument for a hierarchical fit on real
+short-deployment tags.
+
+Reproduce: `Rscript -e 'CFG <- list(benefit=TRUE, N=12L, days=7, sweeps=4000L); source("da_hier.R")'`
 
 ## The exactness invariant (do not break when extending)
 
@@ -143,8 +164,9 @@ Rscript -e 'CFG <- list(dataset="sim_equinox", surrogate="coarse_hmm", coarse_re
 
 ## Next
 
-- Demonstrate the **pooling benefit**: hierarchical short-track `σ_i` estimates
-  vs independent per-track fits, on short tracks where borrowing strength helps.
+- Richer **partial-pooling** regime (longer or heterogeneous track lengths), where
+  well-identified individuals stay near their data while noisy ones shrink — a
+  more nuanced picture than the near-complete pooling of the short-track panel.
 - The genuinely-bimodal **equinox** case within the hierarchy (M4 machinery + the
   multimodal fallback), if any panel member crosses the equator near equinox.
 - Port the validated kernel to the compiled engine if the wall-clock (not just
