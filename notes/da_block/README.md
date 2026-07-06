@@ -12,6 +12,7 @@ the cheapest correctness check, and the one that surfaced every subtlety here.
 
 ## Files
 
+Single track:
 - `da_block_singletrack.R` — the sampler (gold single-site + surrogate-posterior
   block), the coarse grid-HMM smoother surrogate (pure R), the batched exact
   emitter, and the gold-vs-block comparison + plot. Driven by a `CFG` list.
@@ -19,7 +20,14 @@ the cheapest correctness check, and the one that surfaced every subtlety here.
   `eval_logpk_grid()` to ~1e-14 (needed before batching can be trusted).
 - `probe_likelihood.R` — plots the exact per-knot likelihood vs latitude; the
   diagnosis behind M2.
-- `figures/` — the four figures referenced below.
+
+Hierarchy (multi-individual partial pooling):
+- `sim_panel.R` — simulate a panel of N individuals with per-individual movement
+  scale `σ_i`, forward zenith→light model (`simulate_panel()`; guarded, no
+  side effects when sourced).
+- `da_hier.R` — the hierarchical Gibbs sampler and the block-vs-gold check on the
+  pooled parameters (see the H1/H2 section below).
+- `figures/` — the figures referenced below.
 
 ## What was learned
 
@@ -70,6 +78,34 @@ exactness is preserved. On `sim_short`: likelihood FFI calls drop 28 → 7.2 per
 sweep (3.9×), ~19× fewer in total once the mixing win is included. The systems
 payoff scales with how costly the exact evaluation is relative to R glue.
 
+### H1 / H2 — the hierarchy (`figures/h1_panel.png`)
+The original goal: partial pooling of the movement scale across individuals,
+where the validated per-individual block kernel is reused thousands of times.
+
+- **Model:** `σ_i² ~ InvGamma(a_pop, β)`, `β ~ Gamma(g0, h0)`; Gibbs alternates
+  a per-individual track update with conjugate draws of `σ_i²` and `β`.
+- **Hyperprior must be vague** (`g0 = h0 = 1e-3`): `σ_i²` is a per-knot km²
+  variance (~O(1000)), so an O(1) hyperprior pins the population level wrongly.
+- **Block-only under-mixes** the high-frequency track wiggle that drives the
+  movement-variance estimate (block proposals are smooth coarse-HMM bridges),
+  giving systematically low `σ_i` — a 2.2σ gap vs gold at one individual.
+- **Fix = hybrid:** block moves (mix the global track position) + a **batched
+  red-black single-site polish** (mix the wiggle), both exact. Red-black =
+  interior knots of one parity are conditionally independent given the other, so
+  each half-sweep proposes and evaluates all of one parity in one `emit` call
+  (2 emit calls per polish, not `K−1`).
+- **Result:** block ≡ gold on every pooled parameter (`|Δμ|/σ` 0.01–0.33; pop
+  scale 34.7 vs 36.2 km/day). Likelihood FFI calls: gold 1.008M `eval` vs block
+  221k (mostly cheap `emit`) — **~4.6× fewer**. Wall-time is *slower* in this toy
+  (the likelihood is cheap, so R glue dominates); the call-count reduction is the
+  win when the exact evaluation is expensive, which is the real-geolocation case.
+
+Reproduce: `Rscript -e 'CFG <- list(compare=TRUE, sweeps=4000L, gold_sweeps=6000L); source("da_hier.R")'`
+
+Not yet done: a demonstration of the *pooling benefit* — that hierarchical
+short-track `σ_i` estimates beat independent per-track fits (the scientific
+payoff of the hierarchy).
+
 ## The exactness invariant (do not break when extending)
 
 The block correction is valid **only** because the block is drawn from the *same*
@@ -107,12 +143,14 @@ Rscript -e 'CFG <- list(dataset="sim_equinox", surrogate="coarse_hmm", coarse_re
 
 ## Next
 
-The multi-individual **hierarchy** (partial pooling of the movement scale across
-individuals) is the original goal: this validated per-individual block kernel
-becomes the track update inside a conjugate Gibbs sampler over the pooled
-parameters, where the mixing and batching wins compound.
+- Demonstrate the **pooling benefit**: hierarchical short-track `σ_i` estimates
+  vs independent per-track fits, on short tracks where borrowing strength helps.
+- The genuinely-bimodal **equinox** case within the hierarchy (M4 machinery + the
+  multimodal fallback), if any panel member crosses the equator near equinox.
+- Port the validated kernel to the compiled engine if the wall-clock (not just
+  FFI-call) win is needed at scale.
 
 Note: the coarse-HMM surrogate is currently built in pure R because the installed
 `run_grid_hmm` was a stale binary that segfaulted on fixed points (fixed by
-reinstalling from source). On a fresh build the surrogate could instead use the
-real `run_grid_hmm` per-knot marginals.
+reinstalling from source, commit 206f8ff). On a fresh build the surrogate could
+instead use the real `run_grid_hmm` per-knot marginals.
