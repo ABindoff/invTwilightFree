@@ -28,6 +28,11 @@
 #' @param flat_light_scale Diffusion multiplier applied on flat-light knots (see
 #'   `flat_light_threshold`). Values in \eqn{(0, 1)} constrain movement; `1.0` disables the
 #'   heuristic entirely. Default `0.1` (10\eqn{\times} tighter).
+#' @param calibrate If `TRUE` and both endpoint locations are known, the tag clock
+#'   is calibrated from the known deployment and retrieval fixes (via
+#'   [calibrate_clock_from_endpoints()]) and the observation times are corrected
+#'   before fitting. The fitted clock model is returned as `$clock`. Default
+#'   `FALSE` (no correction).
 #' @importFrom stats quantile lm coef
 #' @export
 #' @return A `TwilightFreeTrack` object
@@ -46,7 +51,8 @@ TwilightFreeSMC <- function(date_time, light,
                            seed = NULL,
                            terms = list(),
                            flat_light_threshold = 10.0,
-                           flat_light_scale = 0.1) {
+                           flat_light_scale = 0.1,
+                           calibrate = FALSE) {
   
   if(!inherits(date_time, "POSIXct")) {
     stop("date_time must be POSIXct")
@@ -90,7 +96,17 @@ TwilightFreeSMC <- function(date_time, light,
   ord <- order(date_time)
   date_time <- date_time[ord]
   light <- light[ord]
-  
+
+  # Optional clock calibration from the known endpoints (engine-agnostic): correct
+  # the observation timestamps before auto-calibration and knot construction, so
+  # the rest of the engine sees a clock-corrected series.
+  clock <- NULL
+  if (isTRUE(calibrate)) {
+    clock <- calibrate_clock_from_endpoints(date_time, light, start_lon, start_lat,
+                                            end_lon, end_lat, calibration, likelihood_params)
+    if (!is.null(clock)) date_time <- clock$correct(date_time)
+  }
+
   # Auto-Calibration
   if (is.null(calibration) || is.null(likelihood_params)) {
     min_l <- quantile(light, 0.05, na.rm = TRUE)
@@ -242,6 +258,7 @@ TwilightFreeSMC <- function(date_time, light,
   )
   
   res$obs_light <- light
+  res$clock <- clock          # NULL unless calibrate = TRUE; the fitted clock model
   class(res) <- "TwilightFreeTrack"
   return(res)
 }
@@ -265,6 +282,10 @@ print.TwilightFreeTrack <- function(x, ...) {
   cat(sprintf("Mean Lat:           %.2f (Avg SD: %.2f)\n", mean(x$lat), mean(x$lat_sd)))
   cat(sprintf("Mean Lon:           %.2f (Avg SD: %.2f)\n", mean(x$lon), mean(x$lon_sd)))
   cat(sprintf("Avg Anomaly Prob:   %.1f%%\n", mean(x$prob_false) * 100))
+  if (!is.null(x$clock)) {
+    cat("---------------------------------------------\n")
+    for (line in format_clock(x$clock)) cat(line, "\n", sep = "")
+  }
   cat("=============================================\n")
   invisible(x)
 }

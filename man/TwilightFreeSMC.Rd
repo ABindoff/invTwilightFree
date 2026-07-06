@@ -24,7 +24,8 @@ TwilightFreeSMC(
   seed = NULL,
   terms = list(),
   flat_light_threshold = 10,
-  flat_light_scale = 0.1
+  flat_light_scale = 0.1,
+  calibrate = FALSE
 )
 }
 \arguments{
@@ -72,6 +73,12 @@ twilight, so light provides no positional signal. Diffusion is multiplied by
 \item{flat_light_scale}{Diffusion multiplier applied on flat-light knots (see
 `flat_light_threshold`). Values in \eqn{(0, 1)} constrain movement; `1.0` disables the
 heuristic entirely. Default `0.1` (10\eqn{\times} tighter).}
+
+\item{calibrate}{If `TRUE` and both endpoint locations are known, the tag clock
+is calibrated from the known deployment and retrieval fixes (via
+[calibrate_clock_from_endpoints()]) and the observation times are corrected
+before fitting. The fitted clock model is returned as `$clock`. Default
+`FALSE` (no correction).}
 }
 \value{
 A `TwilightFreeTrack` object
