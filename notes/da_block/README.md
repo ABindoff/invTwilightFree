@@ -216,6 +216,35 @@ The Rust kernels are internal (no `@export`, like `run_grid_hmm`); the drivers u
 `devtools::load_all()`. Calibration transfers by construction: the Rust posteriors
 equal the R ones, which pass SBC.
 
+### Spherical movement metric (S1/S2) — `figures/sbc_spherical_metric.png`, `sbc_flat_metric.png`
+The prototype used a flat tangent-plane RW at a fixed reference latitude
+(`P_move = C⁻¹/sig2`, `C = diag(km_lon², km_lat²)`). That mis-scales longitude far
+from the reference and doesn't match the grid engine's great-circle transition.
+The Rust kernel now offers `metric = "spherical"` (default in `TwilightFreeHier`),
+targeting the engine's model `p(x_k|x_{k-1}) ∝ exp(−gcdist²/2·sig2)`:
+
+- The block **proposal** stays linear-Gaussian (so the tridiagonal Cholesky draw
+  is unchanged). The **DA acceptance** gains a movement-prior correction,
+  `−[(gc²−planar²)_prop − (gc²−planar²)_cur] / (2·sig2)` summed over each move's
+  edges, upgrading the target prior from the linear approximation to great-circle.
+- The conjugate `sig2` update uses `SS = Σ gcdist²` (great-circle) instead of the
+  planar sum. Exactness is preserved; `metric = "flat"` reproduces the old path.
+
+SBC (self-consistency: generate great-circle tracks, fit, rank `sig2_i`), tuned to
+**wide, high-latitude tracks** (deploy −62°, ~11° latitude range) where the metric
+matters most:
+- **Spherical fit: calibrated** — the rank ECDF wobbles randomly within the band.
+- **Flat fit: biased** — a systematic bowl dipping to the band edge (−0.08),
+  i.e. `sig2` under-estimated, because the fixed deploy-latitude longitude scaling
+  under-scales movement as the track heads equatorward. It scrapes inside the 95%
+  band at 60 reps but the *shape* (systematic vs random) is the diagnosis; more
+  reps or wider tracks push it out.
+
+Takeaway: spherical is correct and is the right default; the flat metric is a fine
+approximation for narrow-latitude tracks (which is why the earlier flat-based work
+held up) but degrades for wide-ranging or high-latitude animals.
+Reproduce: `Rscript -e 'REPS_S <- 60L; source("sbc_spherical.R")'`.
+
 ## The exactness invariant (do not break when extending)
 
 The block correction is valid **only** because the block is drawn from the *same*
@@ -253,17 +282,13 @@ Rscript -e 'CFG <- list(dataset="sim_equinox", surrogate="coarse_hmm", coarse_re
 
 ## Next
 
-- **Spherical movement metric** in the Rust kernels: the port currently keeps the
-  prototype's flat lon/lat metric (`P_move = C⁻¹/sig2`, `C = diag(km_lon², km_lat²)`).
-  Swap it for the engine's great-circle transition and confirm with a
-  spherical-metric SBC (mirroring `inst/sbc/sbc_grid_hmm.R`'s `sphere` gen).
-- Optional: a direct SBC of `run_block_hier` (now ~6× cheaper to run) for
-  belt-and-suspenders, though calibration already transfers from the R SBC via the
-  posterior equivalence.
+- Per-tag **SST/bathymetry** demonstrated end-to-end from a real data column via
+  `terms = function(id, df) ...` (the mechanism is wired; only a worked example
+  with `sst_source()` remains).
 - The genuinely-bimodal **equinox** case within the hierarchy (M4 machinery + the
   multimodal fallback), if any panel member crosses the equator near equinox.
-- A first-class R API wrapping `run_block_hier` (surrogate build + flatten +
-  call + reshape) if this becomes a package feature rather than a prototype.
+- A finer aux grid (currently nearest-cell on the coarse surrogate mesh) if a
+  sensor field needs sub-mesh resolution.
 
 Note: the coarse-HMM surrogate is currently built in pure R because the installed
 `run_grid_hmm` was a stale binary that segfaulted on fixed points (fixed by

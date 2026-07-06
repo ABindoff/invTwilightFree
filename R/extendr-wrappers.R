@@ -139,11 +139,13 @@ run_block_track <- function(knot_obs_start, knot_obs_len, obs_times, obs_light, 
 #' @param burn Burn-in sweeps
 #' @param thin Thinning interval
 #' @param polish Whether to run the red-black polish each sweep
+#' @param spherical Great-circle movement metric (exp(-gcdist^2/2 sig2)) if TRUE,
+#'   else the flat tangent-plane metric at each tag's reference latitude
 #' @param seed RNG seed; 0 means entropy
 #' @return List with beta and sig2 (kept draws), plus per-knot track posterior
 #'   mean_lon/sd_lon/mean_lat/sd_lat (concatenated across individuals, same order
 #'   as knots_per_ind)
 #' @name run_block_hier
-run_block_hier <- function(n_ind, knots_per_ind, knot_obs_start, knot_obs_len, obs_times, obs_light, cal, lp, surr_mu, surr_p, cinv, start_lon, start_lat, end_lon, end_lat, aux_flat, aux_ncol, aux_nrow, aux_lon0, aux_dlon, aux_lat0, aux_dlat, a_pop, g0, h0, block_len, sweeps, burn, thin, polish, seed) .Call(wrap__run_block_hier, n_ind, knots_per_ind, knot_obs_start, knot_obs_len, obs_times, obs_light, cal, lp, surr_mu, surr_p, cinv, start_lon, start_lat, end_lon, end_lat, aux_flat, aux_ncol, aux_nrow, aux_lon0, aux_dlon, aux_lat0, aux_dlat, a_pop, g0, h0, block_len, sweeps, burn, thin, polish, seed)
+run_block_hier <- function(n_ind, knots_per_ind, knot_obs_start, knot_obs_len, obs_times, obs_light, cal, lp, surr_mu, surr_p, cinv, start_lon, start_lat, end_lon, end_lat, aux_flat, aux_ncol, aux_nrow, aux_lon0, aux_dlon, aux_lat0, aux_dlat, a_pop, g0, h0, block_len, sweeps, burn, thin, polish, spherical, seed) .Call(wrap__run_block_hier, n_ind, knots_per_ind, knot_obs_start, knot_obs_len, obs_times, obs_light, cal, lp, surr_mu, surr_p, cinv, start_lon, start_lat, end_lon, end_lat, aux_flat, aux_ncol, aux_nrow, aux_lon0, aux_dlon, aux_lat0, aux_dlat, a_pop, g0, h0, block_len, sweeps, burn, thin, polish, spherical, seed)
 
 # nolint end

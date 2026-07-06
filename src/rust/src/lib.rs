@@ -1200,6 +1200,25 @@ fn m2_chol_lower(m: &[f64; 4]) -> [f64; 4] {  // L with L L^T = m; [l00, 0, l10,
 #[inline]
 fn quad2(p: &[f64; 4], dx: f64, dy: f64) -> f64 { p[0]*dx*dx + 2.0*p[1]*dx*dy + p[3]*dy*dy }
 
+// Great-circle (haversine) distance in km.
+#[inline]
+fn gcdist_km(lon1: f64, lat1: f64, lon2: f64, lat2: f64) -> f64 {
+    let r = 6371.0_f64;
+    let (p1, p2) = (lat1.to_radians(), lat2.to_radians());
+    let (dlat, dlon) = ((lat2 - lat1).to_radians(), (lon2 - lon1).to_radians());
+    let a = (dlat*0.5).sin().powi(2) + p1.cos()*p2.cos()*(dlon*0.5).sin().powi(2);
+    2.0 * r * a.sqrt().asin()
+}
+// One edge's (great-circle^2 - planar^2) in km^2. planar^2 uses the tag's fixed
+// reference metric (km_lon2, km_lat2) so it matches the linear proposal's density;
+// the DA correction adds (this)/(-2 sig2) to upgrade the target prior to great-circle.
+#[inline]
+fn mv_edge(km_lon2: f64, km_lat2: f64, lon1: f64, lat1: f64, lon2: f64, lat2: f64) -> f64 {
+    let gc = gcdist_km(lon1, lat1, lon2, lat2);
+    let (dlon, dlat) = (lon2 - lon1, lat2 - lat1);
+    gc*gc - (km_lon2*dlon*dlon + km_lat2*dlat*dlat)
+}
+
 // Dense upper Cholesky R (row-major n x n), R^T R = Q.
 fn chol_upper(q: &[f64], n: usize) -> Vec<f64> {
     let mut r = vec![0.0f64; n*n];
@@ -1247,6 +1266,7 @@ struct Ctx<'a> {
     aux: &'a [f64],       // this tag's K*ncell aux values (empty if no terms)
     aux_lon0: f64, aux_dlon: f64, aux_ncol: usize,
     aux_lat0: f64, aux_dlat: f64, aux_nrow: usize,
+    spherical: bool, km_lon2: f64, km_lat2: f64,   // great-circle movement metric
 }
 impl<'a> Ctx<'a> {
     #[inline]
@@ -1292,7 +1312,18 @@ fn single_site(ctx: &Ctx, xlon: &mut [f64], xlat: &mut [f64], le: &mut [f64], ko
     let px = mx + l[0]*z0;
     let py = my + l[2]*z0 + l[3]*z1;
     let le_p = ctx.emit(koff + t, px, py);
-    if rng.gen::<f64>().ln() < le_p - le[t] { xlon[t] = px; xlat[t] = py; le[t] = le_p; }
+    let mut corr = le_p - le[t];
+    if ctx.spherical {
+        let sig2 = ctx.km_lon2 / pm[0];
+        let mut e = mv_edge(ctx.km_lon2, ctx.km_lat2, xlon[t-1], xlat[t-1], px, py)
+                  - mv_edge(ctx.km_lon2, ctx.km_lat2, xlon[t-1], xlat[t-1], xlon[t], xlat[t]);
+        if t < k - 1 {
+            e += mv_edge(ctx.km_lon2, ctx.km_lat2, px, py, xlon[t+1], xlat[t+1])
+               - mv_edge(ctx.km_lon2, ctx.km_lat2, xlon[t], xlat[t], xlon[t+1], xlat[t+1]);
+        }
+        corr += -e / (2.0 * sig2);
+    }
+    if rng.gen::<f64>().ln() < corr { xlon[t] = px; xlat[t] = py; le[t] = le_p; }
 }
 
 fn rb_polish(ctx: &Ctx, xlon: &mut [f64], xlat: &mut [f64], le: &mut [f64], koff: usize,
@@ -1307,7 +1338,16 @@ fn rb_polish(ctx: &Ctx, xlon: &mut [f64], xlat: &mut [f64], le: &mut [f64], koff
             let px = mx + l[0]*z0;
             let py = my + l[2]*z0 + l[3]*z1;
             let le_p = ctx.emit(koff + t, px, py);
-            if rng.gen::<f64>().ln() < le_p - le[t] { xlon[t] = px; xlat[t] = py; le[t] = le_p; }
+            let mut corr = le_p - le[t];
+            if ctx.spherical {
+                let sig2 = ctx.km_lon2 / pm[0];
+                let e = mv_edge(ctx.km_lon2, ctx.km_lat2, xlon[t-1], xlat[t-1], px, py)
+                      - mv_edge(ctx.km_lon2, ctx.km_lat2, xlon[t-1], xlat[t-1], xlon[t], xlat[t])
+                      + mv_edge(ctx.km_lon2, ctx.km_lat2, px, py, xlon[t+1], xlat[t+1])
+                      - mv_edge(ctx.km_lon2, ctx.km_lat2, xlon[t], xlat[t], xlon[t+1], xlat[t+1]);
+                corr += -e / (2.0 * sig2);
+            }
+            if rng.gen::<f64>().ln() < corr { xlon[t] = px; xlat[t] = py; le[t] = le_p; }
         }
     }
 }
@@ -1353,6 +1393,19 @@ fn block_update(ctx: &Ctx, xlon: &mut [f64], xlat: &mut [f64], le: &mut [f64], k
         let (mkx, mky) = (surr_mu[2*gk], surr_mu[2*gk + 1]);
         lep[a] = ctx.emit(gk, px, py);
         corr += (lep[a] - (-0.5*quad2(&pk, px-mkx, py-mky))) - (le[l+a] - (-0.5*quad2(&pk, cx-mkx, cy-mky)));
+    }
+    if ctx.spherical {
+        let sig2 = ctx.km_lon2 / pm[0];
+        let posp = |m: usize| -> (f64, f64) {
+            if m >= l && m <= r { (prop[2*(m-l)], prop[2*(m-l)+1]) } else { (xlon[m], xlat[m]) }
+        };
+        let mut e = 0.0;
+        for m in (l-1)..=r {   // affected edges (m, m+1), m = l-1..r
+            let (pa, pb) = (posp(m), posp(m + 1));
+            e += mv_edge(ctx.km_lon2, ctx.km_lat2, pa.0, pa.1, pb.0, pb.1)
+               - mv_edge(ctx.km_lon2, ctx.km_lat2, xlon[m], xlat[m], xlon[m+1], xlat[m+1]);
+        }
+        corr += -e / (2.0 * sig2);
     }
     if rng.gen::<f64>().ln() < corr {
         for a in 0..b_len { xlon[l + a] = prop[2*a]; xlat[l + a] = prop[2*a + 1]; le[l + a] = lep[a]; }
@@ -1427,6 +1480,7 @@ fn run_block_track(
         intercept: calibration[0], slope: calibration[1],
         lambda: likelihood_params[0], max_light: likelihood_params[1], prob_slab: likelihood_params[2],
         koff: 0, aux: &[], aux_lon0: 0.0, aux_dlon: 1.0, aux_ncol: 0, aux_lat0: 0.0, aux_dlat: 1.0, aux_nrow: 0,
+        spherical: false, km_lon2: 0.0, km_lat2: 0.0,
     };
     let informative: Vec<bool> = knot_obs_len.iter().map(|&n| n > 0).collect();
 
@@ -1504,6 +1558,8 @@ fn run_block_track(
 /// @param burn Burn-in sweeps
 /// @param thin Thinning interval
 /// @param polish Whether to run the red-black polish each sweep
+/// @param spherical Great-circle movement metric (exp(-gcdist^2/2 sig2)) if TRUE,
+///   else the flat tangent-plane metric at each tag's reference latitude
 /// @param seed RNG seed; 0 means entropy
 /// @return List with beta and sig2 (kept draws), plus per-knot track posterior
 ///   mean_lon/sd_lon/mean_lat/sd_lat (concatenated across individuals, same order
@@ -1521,7 +1577,7 @@ fn run_block_hier(
     aux_flat: Vec<f64>, aux_ncol: &[i32], aux_nrow: &[i32],   // sensor terms (0 cells => none)
     aux_lon0: Vec<f64>, aux_dlon: Vec<f64>, aux_lat0: Vec<f64>, aux_dlat: Vec<f64>,
     a_pop: f64, g0: f64, h0: f64,
-    block_len: i32, sweeps: i32, burn: i32, thin: i32, polish: bool, seed: f64,
+    block_len: i32, sweeps: i32, burn: i32, thin: i32, polish: bool, spherical: bool, seed: f64,
 ) -> List {
     let n = n_ind as usize;
     let bl = block_len as usize;
@@ -1557,6 +1613,7 @@ fn run_block_hier(
             koff: koff[i], aux: aslice,
             aux_lon0: aux_lon0[i], aux_dlon: aux_dlon[i], aux_ncol: ancol[i],
             aux_lat0: aux_lat0[i], aux_dlat: aux_dlat[i], aux_nrow: anrow[i],
+            spherical, km_lon2: cinv_i[i][0], km_lat2: cinv_i[i][3],
         }
     }).collect();
 
@@ -1572,10 +1629,11 @@ fn run_block_hier(
         xl[0] = start_lon[i]; xt[0] = start_lat[i];
         if !free_end[i] { xl[k-1] = end_lon[i]; xt[k-1] = end_lat[i]; }
         let lei: Vec<f64> = (0..k).map(|t| ctxs[i].emit(koff[i] + t, xl[t], xt[t])).collect();
-        // data-driven sig2 start from initial increments
+        // data-driven sig2 start from initial increments (great-circle^2 if spherical)
         let mut ss = 0.0;
         for t in 1..k {
-            ss += quad2(&cinv_i[i], xl[t]-xl[t-1], xt[t]-xt[t-1]);
+            ss += if spherical { let d = gcdist_km(xl[t-1], xt[t-1], xl[t], xt[t]); d*d }
+                  else { quad2(&cinv_i[i], xl[t]-xl[t-1], xt[t]-xt[t-1]) };
         }
         sig2[i] = (ss / (k as f64 - 1.0)).max(1e-6);
         xlon.push(xl); xlat.push(xt); le.push(lei);
@@ -1597,8 +1655,12 @@ fn run_block_hier(
             track_update(&ctxs[i], &mut xlon[i], &mut xlat[i], &mut le[i], koff[i], k,
                          &surr_mu, &surr_p, &pm, bl, polish, free_end[i], &mut rng, &nrm);
             // conjugate sig2_i | track ~ InvGamma(a_pop + (k-1), beta + 0.5 SS)
+            // SS is sum of squared movement (great-circle when spherical, planar otherwise)
             let mut ss = 0.0;
-            for t in 1..k { ss += quad2(&cinv_i[i], xlon[i][t]-xlon[i][t-1], xlat[i][t]-xlat[i][t-1]); }
+            for t in 1..k {
+                ss += if spherical { let d = gcdist_km(xlon[i][t-1], xlat[i][t-1], xlon[i][t], xlat[i][t]); d*d }
+                      else { quad2(&cinv_i[i], xlon[i][t]-xlon[i][t-1], xlat[i][t]-xlat[i][t-1]) };
+            }
             let g = Gamma::new(a_pop + (k as f64 - 1.0), 1.0 / (beta + 0.5*ss)).unwrap();
             sig2[i] = 1.0 / rng.sample(g);
         }

@@ -24,6 +24,7 @@ TwilightFreeHier(
   burn = 1500L,
   thin = 5L,
   polish = TRUE,
+  metric = c("spherical", "flat"),
   seed = NULL
 )
 }
@@ -82,6 +83,10 @@ surrogate mesh (default 20; increase for wide-ranging animals).}
 
 \item{polish}{Run the red-black single-site polish each sweep (default TRUE;
 needed for unbiased movement-variance estimation).}
+
+\item{metric}{Movement metric: "spherical" (default; great-circle, matches the
+grid engine and is correct for wide-ranging or high-latitude tracks) or "flat"
+(tangent plane at each tag's deployment latitude, slightly faster).}
 
 \item{seed}{Integer RNG seed; \code{NULL} is non-deterministic.}
 }

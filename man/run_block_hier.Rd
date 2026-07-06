@@ -35,6 +35,7 @@ run_block_hier(
   burn,
   thin,
   polish,
+  spherical,
   seed
 )
 }
@@ -91,6 +92,9 @@ terms), each tag a K*ncell block on its own regular lon/lat grid; empty for none
 \item{thin}{Thinning interval}
 
 \item{polish}{Whether to run the red-black polish each sweep}
+
+\item{spherical}{Great-circle movement metric (exp(-gcdist^2/2 sig2)) if TRUE,
+else the flat tangent-plane metric at each tag's reference latitude}
 
 \item{seed}{RNG seed; 0 means entropy}
 }

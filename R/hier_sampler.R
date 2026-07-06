@@ -48,6 +48,9 @@
 #' @param sweeps,burn,thin MCMC length, burn-in and thinning (defaults 4000/1500/5).
 #' @param polish Run the red-black single-site polish each sweep (default TRUE;
 #'   needed for unbiased movement-variance estimation).
+#' @param metric Movement metric: "spherical" (default; great-circle, matches the
+#'   grid engine and is correct for wide-ranging or high-latitude tracks) or "flat"
+#'   (tangent plane at each tag's deployment latitude, slightly faster).
 #' @param seed Integer RNG seed; \code{NULL} is non-deterministic.
 #' @return An object of class \code{TwilightFreeHier} with elements \code{population}
 #'   (population movement scale posterior, km/day), \code{movement} (per-tag
@@ -63,8 +66,9 @@ TwilightFreeHier <- function(data, locations,
                              surrogate_diffusion = 100, mesh_pad = 20, coarse_res = 1.5,
                              inflate = 1.5, block_len = 5L,
                              sweeps = 4000L, burn = 1500L, thin = 5L,
-                             polish = TRUE, seed = NULL) {
+                             polish = TRUE, metric = c("spherical", "flat"), seed = NULL) {
 
+  metric <- match.arg(metric)
   panel <- .tfh_as_list(data, id)
   tags  <- .tfh_resolve_ids(panel, locations)
   n <- length(tags$data)
@@ -95,6 +99,7 @@ TwilightFreeHier <- function(data, locations,
     fl$aux_flat, fl$aux_ncol, fl$aux_nrow, fl$aux_lon0, fl$aux_dlon, fl$aux_lat0, fl$aux_dlat,
     a_pop, hyperprior[1], hyperprior[2], as.integer(block_len),
     as.integer(sweeps), as.integer(burn), as.integer(thin), isTRUE(polish),
+    identical(metric, "spherical"),
     as.numeric(if (is.null(seed)) 0 else seed))
 
   .tfh_assemble(fit, ind, tags, a_pop, step_hours)
