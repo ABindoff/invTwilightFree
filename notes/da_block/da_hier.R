@@ -31,16 +31,21 @@ CTR <- new.env(); CTR$calls <- 0L; CTR$emit <- 0L
 # ---- per-individual setup: knots, calibration, obs bins (as TwilightFreeGrid) ----
 setup_track <- function(df, start_lon, start_lat, step_hours) {
   light <- df$light; date_time <- df$time
-  min_l <- stats::quantile(light, 0.05, na.rm = TRUE); max_l <- stats::quantile(light, 0.95, na.rm = TRUE)
-  lsh <- pmax(0, light - min_l); maxs <- as.numeric(max_l - min_l)
-  ci <- date_time < (date_time[1] + 3*24*3600)
-  cz <- solar_zenith(as.numeric(date_time[ci]), rep(start_lon, sum(ci)), rep(start_lat, sum(ci)))
-  ti <- which(lsh[ci] > 0 & lsh[ci] < maxs*0.95 & cz > 85 & cz < 100)
-  if (length(ti) > 10) {
-    fitc <- stats::lm(lsh[ci][ti] ~ cz[ti]); icpt <- stats::coef(fitc)[1]; slp <- -stats::coef(fitc)[2]
-    if (is.na(slp) || slp <= 0) slp <- maxs/(96-85)
-  } else { slp <- maxs/(96-85); icpt <- slp*96 }
-  calibration <- as.numeric(c(icpt, slp)); likpar <- as.numeric(c(1/(maxs*0.5), maxs, 0.10))
+  if (!is.null(cfg$calibration) && !is.null(cfg$likpar)) {
+    # FIXED calibration (SBC / known-clock use): use raw light, no auto-cal, no shift
+    calibration <- cfg$calibration; likpar <- cfg$likpar; lsh <- light
+  } else {
+    min_l <- stats::quantile(light, 0.05, na.rm = TRUE); max_l <- stats::quantile(light, 0.95, na.rm = TRUE)
+    lsh <- pmax(0, light - min_l); maxs <- as.numeric(max_l - min_l)
+    ci <- date_time < (date_time[1] + 3*24*3600)
+    cz <- solar_zenith(as.numeric(date_time[ci]), rep(start_lon, sum(ci)), rep(start_lat, sum(ci)))
+    ti <- which(lsh[ci] > 0 & lsh[ci] < maxs*0.95 & cz > 85 & cz < 100)
+    if (length(ti) > 10) {
+      fitc <- stats::lm(lsh[ci][ti] ~ cz[ti]); icpt <- stats::coef(fitc)[1]; slp <- -stats::coef(fitc)[2]
+      if (is.na(slp) || slp <= 0) slp <- maxs/(96-85)
+    } else { slp <- maxs/(96-85); icpt <- slp*96 }
+    calibration <- as.numeric(c(icpt, slp)); likpar <- as.numeric(c(1/(maxs*0.5), maxs, 0.10))
+  }
   ut <- as.numeric(date_time); t0 <- ut[1]; t1 <- ut[length(ut)]
   ks <- ceiling((t1-t0)/(step_hours*3600)) + 1; tstep <- if (ks>1) (t1-t0)/(ks-1) else 0
   kt <- t0 + (0:(ks-1))*tstep
@@ -69,7 +74,7 @@ make_individual <- function(df, start_lon, start_lat) {
   E$intercept <- cal[1]; E$slope <- cal[2]
   E$lambda <- lp[1]; E$max_light <- lp[2]; E$prob_slab <- lp[3]
   # local metric: Cinv = diag(km_lon^2, km_lat^2); movement cov = sig2 * Cinv^{-1}
-  lat_ref <- mean(df$true_lat)
+  lat_ref <- if (!is.null(cfg$lat_ref)) cfg$lat_ref else mean(df$true_lat)  # fix for SBC metric match
   km_lat <- 111.0; km_lon <- 111.0*cos(lat_ref*pi/180)
   E$Cinv <- diag(c(km_lon^2, km_lat^2))     # P_move = Cinv / sig2
 
@@ -204,8 +209,11 @@ ss_track <- function(E, x) {
 }
 
 # ---------------------------------------------------------------------
-# Build the panel and the individuals
+# Build the panel and run. Skipped when cfg$lib_only=TRUE so the functions
+# above can be reused (e.g. by the SBC harness) without side effects.
 # ---------------------------------------------------------------------
+if (!isTRUE(cfg$lib_only)) {
+
 PAN <- simulate_panel(N=cfg$N, days=cfg$days, step_min=10, pop_km_per_day=45)
 N <- cfg$N
 message(sprintf("building %d individuals (surrogates) ...", N))
@@ -338,3 +346,5 @@ if (isTRUE(cfg$benefit)) {
   cat(sprintf("\npopulation scale: %.1f [%.1f, %.1f] km/day (true %.0f)\n",
       mean(R$pop), quantile(R$pop,.025), quantile(R$pop,.975), PAN$pop_km_per_day))
 }
+
+}  # end if(!lib_only)

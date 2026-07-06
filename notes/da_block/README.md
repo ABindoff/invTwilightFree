@@ -26,7 +26,14 @@ Hierarchy (multi-individual partial pooling):
   scale `σ_i`, forward zenith→light model (`simulate_panel()`; guarded, no
   side effects when sourced).
 - `da_hier.R` — the hierarchical Gibbs sampler and the block-vs-gold check on the
-  pooled parameters (see the H1/H2 section below).
+  pooled parameters (see the H1/H2 section below). Source with `CFG$lib_only=TRUE`
+  to reuse its functions without running (used by the SBC harness).
+
+Calibration (SBC):
+- `sbc_stageA.R` — simulation-based calibration of the single-individual movement
+  variance `sig2` (block+polish kernel + conjugate update).
+- `sbc_stageB.R` — SBC of the full hierarchy (`β` and `sig2_i` with pooling).
+  Both reuse the package's `inst/sbc/ecdf_bands.R`.
 - `figures/` — the figures referenced below.
 
 ## What was learned
@@ -152,6 +159,37 @@ leaves them alone.
 
 Reproduce: `Rscript -e 'CFG <- list(benefit=TRUE, N=12L, days=c(3,3,5,5,7,7,10,10,14,14,21,21), sweeps=4000L); source("da_hier.R")'`
 
+### SBC — absolute calibration (`figures/sbc_a_sig2.png`, `sbc_b_beta.png`, `sbc_b_sig2.png`)
+The gold check is *relative* (block ≡ gold). It cannot validate two things: (a) the
+conjugate `sig2_i`/`β` updates, which are **shared** by both samplers, and (b)
+absolute calibration. Simulation-based calibration covers exactly that gap. Both
+stages generate from the inference model *exactly* — draw parameters from proper
+priors, a knot-level piecewise-constant RW track, and normalised spike-and-slab
+light at fixed calibration — then fit and rank the true value among posterior
+draws, checked against the Sailynoja et al. simultaneous ECDF band from
+`inst/sbc/ecdf_bands.R`.
+
+- **Stage A — single-individual `sig2`** (block+polish kernel + conjugate update):
+  **PASS**, 150 replicates, L=100. The rank-ECDF sits inside the 95% band with no
+  systematic skew. This confirms the polish fix (§H2) in an absolute sense — the
+  movement variance is recovered without bias.
+- **Stage B — full hierarchy** (`β` + `sig2_i`, pooling on): **PASS**, 70
+  replicates (70 `β` ranks, 280 `sig2_i` ranks). Both parameters calibrate.
+
+A useful incident: Stage B *initially failed* — not a bug (the conjugate updates
+are provably correct) but **under-convergence** of the coupled `β`/`sig2` chain
+from a cold, over-smooth start. Starting `β` at the prior mean and lengthening
+burn-in fixed it. SBC catches convergence problems the gold check (converged by
+construction) cannot, which is a second reason to run it before the Rust port.
+
+Caveat: this is the **self-consistency** SBC (generator matches the sampler's
+knot-level lon/lat metric), so it validates the *algorithm*. The spherical-metric
+robustness probe belongs with the Rust port — mirroring the `sphere` vs
+`fit_kernel` split already in `inst/sbc/sbc_grid_hmm.R`.
+
+Reproduce: `Rscript -e 'REPS <- 150L; source("sbc_stageA.R")'` and
+`Rscript -e 'REPS_B <- 70L; source("sbc_stageB.R")'` (run from `notes/da_block/`).
+
 ## The exactness invariant (do not break when extending)
 
 The block correction is valid **only** because the block is drawn from the *same*
@@ -189,10 +227,13 @@ Rscript -e 'CFG <- list(dataset="sim_equinox", surrogate="coarse_hmm", coarse_re
 
 ## Next
 
+- **Rust port** of the validated kernel, if the wall-clock (not just FFI-call)
+  win is needed at scale. The algorithm is now validated three ways — gold check
+  (relative exactness), emitter check (1e-14), and SBC (absolute calibration) — so
+  the port is "translate validated logic + swap the lon/lat metric for the
+  engine's spherical one," with a spherical-metric SBC to confirm the swap.
 - The genuinely-bimodal **equinox** case within the hierarchy (M4 machinery + the
   multimodal fallback), if any panel member crosses the equator near equinox.
-- Port the validated kernel to the compiled engine if the wall-clock (not just
-  FFI-call) win is needed at scale.
 
 Note: the coarse-HMM surrogate is currently built in pure R because the installed
 `run_grid_hmm` was a stale binary that segfaulted on fixed points (fixed by
