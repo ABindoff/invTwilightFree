@@ -190,6 +190,32 @@ robustness probe belongs with the Rust port — mirroring the `sphere` vs
 Reproduce: `Rscript -e 'REPS <- 150L; source("sbc_stageA.R")'` and
 `Rscript -e 'REPS_B <- 70L; source("sbc_stageB.R")'` (run from `notes/da_block/`).
 
+### Native Rust port (R1/R2) — wall-time A-B
+The R prototype is glue-bound (Cholesky, `ll_cheap` loops, per-call FFI). Two
+native kernels in `src/rust/src/lib.rs` port the hot loop (surrogate still built
+in R and passed in as `mu_k`, `P_k`):
+- `run_block_track` — the single-track block+polish sweep loop (hand-rolled
+  Cholesky, DA correction, red-black polish, current-emit caching).
+- `run_block_hier` — the whole hierarchy Gibbs natively (per-individual track
+  update + conjugate `sig2_i` + conjugate `β`), no per-sweep FFI.
+
+Drivers `ab_singletrack.R`, `ab_hier.R` run the same model both ways and compare.
+
+- **Correctness:** the Rust posteriors coincide with the R prototype — single
+  track mean gaps ≤0.06°/0.13σ, sd ratios ~1; hierarchy pop-scale 35.0 vs 35.1
+  km/day and per-individual `sig2` `|Δμ|/σ` 0.01–0.14.
+- **Wall time (matched sweeps): ~6×.** Single track 53s→8.6s (4× naive, 6× with
+  emit caching); hierarchy (N=6, 4000 sweeps) **144s→22.5s**.
+- **The ceiling is the likelihood.** The per-obs zenith (`acos`) + spike-slab
+  (`exp`, `log`) dominates and is *already compiled* in both (R via `solar_zenith`,
+  Rust natively). The port removes the orchestration, FFI, repeated ephemeris, and
+  half the likelihood calls (caching) — not the math. Beyond ~6× would require a
+  cheaper likelihood (fewer obs, a twilight approximation), orthogonal to the port.
+
+The Rust kernels are internal (no `@export`, like `run_grid_hmm`); the drivers use
+`devtools::load_all()`. Calibration transfers by construction: the Rust posteriors
+equal the R ones, which pass SBC.
+
 ## The exactness invariant (do not break when extending)
 
 The block correction is valid **only** because the block is drawn from the *same*
@@ -227,13 +253,17 @@ Rscript -e 'CFG <- list(dataset="sim_equinox", surrogate="coarse_hmm", coarse_re
 
 ## Next
 
-- **Rust port** of the validated kernel, if the wall-clock (not just FFI-call)
-  win is needed at scale. The algorithm is now validated three ways — gold check
-  (relative exactness), emitter check (1e-14), and SBC (absolute calibration) — so
-  the port is "translate validated logic + swap the lon/lat metric for the
-  engine's spherical one," with a spherical-metric SBC to confirm the swap.
+- **Spherical movement metric** in the Rust kernels: the port currently keeps the
+  prototype's flat lon/lat metric (`P_move = C⁻¹/sig2`, `C = diag(km_lon², km_lat²)`).
+  Swap it for the engine's great-circle transition and confirm with a
+  spherical-metric SBC (mirroring `inst/sbc/sbc_grid_hmm.R`'s `sphere` gen).
+- Optional: a direct SBC of `run_block_hier` (now ~6× cheaper to run) for
+  belt-and-suspenders, though calibration already transfers from the R SBC via the
+  posterior equivalence.
 - The genuinely-bimodal **equinox** case within the hierarchy (M4 machinery + the
   multimodal fallback), if any panel member crosses the equator near equinox.
+- A first-class R API wrapping `run_block_hier` (surrogate build + flatten +
+  call + reshape) if this becomes a package feature rather than a prototype.
 
 Note: the coarse-HMM surrogate is currently built in pure R because the installed
 `run_grid_hmm` was a stale binary that segfaulted on fixed points (fixed by

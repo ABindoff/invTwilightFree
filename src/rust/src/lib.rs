@@ -122,7 +122,7 @@ fn light_log_likelihood(
 
 use rand::prelude::*;
 use rand::rngs::StdRng;
-use rand_distr::{Normal, Beta};
+use rand_distr::{Normal, Beta, Gamma};
 
 #[derive(Clone, Copy, Debug)]
 struct Particle {
@@ -1171,6 +1171,402 @@ fn run_grid_hmm(
     )
 }
 
+// =====================================================================
+// Native single-track BLOCK + red-black-POLISH sampler kernel.
+//
+// Port of the validated R prototype (notes/da_block/da_hier.R). The coarse-HMM
+// surrogate (per-knot Gaussian mean mu_k and 2x2 precision P_k) and the movement
+// precision P_move are built in R and passed in; this runs the hot sweep loop
+// natively. The delayed-acceptance correction's Gaussian normalisers cancel per
+// knot between proposal and current, so only mu_k and P_k are needed (no
+// determinants). Reuses solar_ephemeris/zenith_from_ephem/spike_density.
+// =====================================================================
+
+// 2x2 row-major helpers: m = [m00, m01, m10, m11]
+#[inline]
+fn m2_mulv(m: &[f64; 4], x: f64, y: f64) -> (f64, f64) { (m[0]*x + m[1]*y, m[2]*x + m[3]*y) }
+#[inline]
+fn m2_inv(m: &[f64; 4]) -> [f64; 4] {
+    let idet = 1.0 / (m[0]*m[3] - m[1]*m[2]);
+    [m[3]*idet, -m[1]*idet, -m[2]*idet, m[0]*idet]
+}
+#[inline]
+fn m2_chol_lower(m: &[f64; 4]) -> [f64; 4] {  // L with L L^T = m; [l00, 0, l10, l11]
+    let l00 = m[0].max(1e-12).sqrt();
+    let l10 = m[2] / l00;
+    let l11 = (m[3] - l10*l10).max(1e-12).sqrt();
+    [l00, 0.0, l10, l11]
+}
+#[inline]
+fn quad2(p: &[f64; 4], dx: f64, dy: f64) -> f64 { p[0]*dx*dx + 2.0*p[1]*dx*dy + p[3]*dy*dy }
+
+// Dense upper Cholesky R (row-major n x n), R^T R = Q.
+fn chol_upper(q: &[f64], n: usize) -> Vec<f64> {
+    let mut r = vec![0.0f64; n*n];
+    for j in 0..n {
+        let mut d = q[j*n + j];
+        for k in 0..j { d -= r[k*n + j]*r[k*n + j]; }
+        let rjj = d.max(1e-12).sqrt();
+        r[j*n + j] = rjj;
+        for i in (j+1)..n {
+            let mut s = q[j*n + i];
+            for k in 0..j { s -= r[k*n + j]*r[k*n + i]; }
+            r[j*n + i] = s / rjj;
+        }
+    }
+    r
+}
+fn solve_lt(r: &[f64], b: &[f64], n: usize) -> Vec<f64> {  // R^T y = b (forward)
+    let mut y = vec![0.0; n];
+    for i in 0..n {
+        let mut s = b[i];
+        for k in 0..i { s -= r[k*n + i]*y[k]; }
+        y[i] = s / r[i*n + i];
+    }
+    y
+}
+fn solve_ut(r: &[f64], y: &[f64], n: usize) -> Vec<f64> {  // R x = y (back)
+    let mut x = vec![0.0; n];
+    for i in (0..n).rev() {
+        let mut s = y[i];
+        for k in (i+1)..n { s -= r[i*n + k]*x[k]; }
+        x[i] = s / r[i*n + i];
+    }
+    x
+}
+
+struct Ctx<'a> {
+    obs_start: &'a [i32], obs_len: &'a [i32],
+    obs_light: &'a [f64], eph: &'a [(f64, f64, f64, f64)],
+    intercept: f64, slope: f64, lambda: f64, max_light: f64, prob_slab: f64,
+}
+impl<'a> Ctx<'a> {
+    #[inline]
+    fn emit(&self, knot: usize, lon: f64, lat: f64) -> f64 {
+        let s = self.obs_start[knot] as usize;
+        let n = self.obs_len[knot] as usize;
+        let slab = 1.0 / self.max_light;
+        let mut ll = 0.0;
+        for j in s..(s + n) {
+            let (sd, cd, ra, gmst) = self.eph[j];
+            let z = zenith_from_ephem(sd, cd, ra, gmst, lon, lat);
+            let expc = (self.intercept - self.slope*z).max(0.0).min(self.max_light);
+            let spike = spike_density(self.obs_light[j], expc, self.lambda, self.max_light);
+            ll += ((1.0 - self.prob_slab)*spike + self.prob_slab*slab).ln();
+        }
+        ll
+    }
+}
+
+// Track moves operate on a per-track local state (xlon/xlat/le indexed 0..k-1);
+// koff maps a local knot t to its global index koff+t in the surrogate/obs arrays,
+// so the same code serves one track or an individual inside the hierarchy.
+// le[t] caches emit(koff+t, current x[t]); only proposals need a fresh emit.
+fn single_site(ctx: &Ctx, xlon: &mut [f64], xlat: &mut [f64], le: &mut [f64], koff: usize,
+               t: usize, k: usize, pm: &[f64; 4], rng: &mut StdRng, nrm: &Normal<f64>) {
+    let (mx, my, prec) = if t == k - 1 {
+        (xlon[t-1], xlat[t-1], *pm)
+    } else {
+        ((xlon[t-1]+xlon[t+1])*0.5, (xlat[t-1]+xlat[t+1])*0.5,
+         [2.0*pm[0], 2.0*pm[1], 2.0*pm[2], 2.0*pm[3]])
+    };
+    let l = m2_chol_lower(&m2_inv(&prec));
+    let (z0, z1): (f64, f64) = (rng.sample(nrm), rng.sample(nrm));
+    let px = mx + l[0]*z0;
+    let py = my + l[2]*z0 + l[3]*z1;
+    let le_p = ctx.emit(koff + t, px, py);
+    if rng.gen::<f64>().ln() < le_p - le[t] { xlon[t] = px; xlat[t] = py; le[t] = le_p; }
+}
+
+fn rb_polish(ctx: &Ctx, xlon: &mut [f64], xlat: &mut [f64], le: &mut [f64], koff: usize,
+             k: usize, pm: &[f64; 4], rng: &mut StdRng, nrm: &Normal<f64>) {
+    let l = m2_chol_lower(&m2_inv(&[2.0*pm[0], 2.0*pm[1], 2.0*pm[2], 2.0*pm[3]]));
+    for parity in 0..2usize {
+        for t in 1..(k - 1) {
+            if t % 2 != parity { continue; }
+            let mx = (xlon[t-1]+xlon[t+1])*0.5;
+            let my = (xlat[t-1]+xlat[t+1])*0.5;
+            let (z0, z1): (f64, f64) = (rng.sample(nrm), rng.sample(nrm));
+            let px = mx + l[0]*z0;
+            let py = my + l[2]*z0 + l[3]*z1;
+            let le_p = ctx.emit(koff + t, px, py);
+            if rng.gen::<f64>().ln() < le_p - le[t] { xlon[t] = px; xlat[t] = py; le[t] = le_p; }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn block_update(ctx: &Ctx, xlon: &mut [f64], xlat: &mut [f64], le: &mut [f64], koff: usize,
+                l: usize, r: usize, surr_mu: &[f64], surr_p: &[f64], pm: &[f64; 4],
+                rng: &mut StdRng, nrm: &Normal<f64>) -> bool {
+    let b_len = r - l + 1;
+    let d = 2 * b_len;
+    let mut q = vec![0.0f64; d*d];
+    let mut bb = vec![0.0f64; d];
+    for a in 0..b_len {
+        let gk = koff + l + a;
+        let (i0, i1) = (2*a, 2*a + 1);
+        let pk = [surr_p[4*gk], surr_p[4*gk+1], surr_p[4*gk+2], surr_p[4*gk+3]];
+        q[i0*d + i0] += 2.0*pm[0] + pk[0]; q[i0*d + i1] += 2.0*pm[1] + pk[1];
+        q[i1*d + i0] += 2.0*pm[2] + pk[2]; q[i1*d + i1] += 2.0*pm[3] + pk[3];
+        if a > 0 {
+            let (j0, j1) = (2*(a-1), 2*(a-1) + 1);
+            q[i0*d + j0] -= pm[0]; q[i0*d + j1] -= pm[1];
+            q[i1*d + j0] -= pm[2]; q[i1*d + j1] -= pm[3];
+            q[j0*d + i0] -= pm[0]; q[j0*d + i1] -= pm[2];
+            q[j1*d + i0] -= pm[1]; q[j1*d + i1] -= pm[3];
+        }
+        let (bx, by) = m2_mulv(&pk, surr_mu[2*gk], surr_mu[2*gk + 1]);
+        bb[i0] += bx; bb[i1] += by;
+    }
+    let (elx, ely) = m2_mulv(pm, xlon[l-1], xlat[l-1]); bb[0] += elx; bb[1] += ely;
+    let (erx, ery) = m2_mulv(pm, xlon[r+1], xlat[r+1]); bb[d-2] += erx; bb[d-1] += ery;
+    let rmat = chol_upper(&q, d);
+    let mu_blk = solve_ut(&rmat, &solve_lt(&rmat, &bb, d), d);
+    let z: Vec<f64> = (0..d).map(|_| rng.sample(nrm)).collect();
+    let xdraw = solve_ut(&rmat, &z, d);
+    let prop: Vec<f64> = (0..d).map(|i| mu_blk[i] + xdraw[i]).collect();
+    let mut corr = 0.0;
+    let mut lep = vec![0.0f64; b_len];
+    for a in 0..b_len {
+        let gk = koff + l + a;
+        let (px, py) = (prop[2*a], prop[2*a + 1]);
+        let (cx, cy) = (xlon[l + a], xlat[l + a]);
+        let pk = [surr_p[4*gk], surr_p[4*gk+1], surr_p[4*gk+2], surr_p[4*gk+3]];
+        let (mkx, mky) = (surr_mu[2*gk], surr_mu[2*gk + 1]);
+        lep[a] = ctx.emit(gk, px, py);
+        corr += (lep[a] - (-0.5*quad2(&pk, px-mkx, py-mky))) - (le[l+a] - (-0.5*quad2(&pk, cx-mkx, cy-mky)));
+    }
+    if rng.gen::<f64>().ln() < corr {
+        for a in 0..b_len { xlon[l + a] = prop[2*a]; xlat[l + a] = prop[2*a + 1]; le[l + a] = lep[a]; }
+        true
+    } else { false }
+}
+
+// One full sweep of a single track: interior blocks (with single-site fallback on
+// obs-free knots), single-site free endpoint, optional red-black polish.
+#[allow(clippy::too_many_arguments)]
+fn track_update(ctx: &Ctx, xlon: &mut [f64], xlat: &mut [f64], le: &mut [f64], koff: usize,
+                k: usize, surr_mu: &[f64], surr_p: &[f64], pm: &[f64; 4], block_len: usize,
+                polish: bool, rng: &mut StdRng, nrm: &Normal<f64>) -> (u64, u64) {
+    let phase = (rng.gen::<u64>() % block_len as u64) as usize;
+    let mut blk_max = if block_len > phase { block_len - phase } else { 1 };
+    let (mut acc, mut att) = (0u64, 0u64);
+    let mut l = 1usize;
+    while l <= k - 2 {
+        if ctx.obs_len[koff + l] <= 0 {
+            single_site(ctx, xlon, xlat, le, koff, l, k, pm, rng, nrm); l += 1; continue;
+        }
+        let mut r = l;
+        while r < (l + blk_max - 1).min(k - 2) && ctx.obs_len[koff + r + 1] > 0 { r += 1; }
+        blk_max = block_len;
+        att += 1;
+        if block_update(ctx, xlon, xlat, le, koff, l, r, surr_mu, surr_p, pm, rng, nrm) { acc += 1; }
+        l = r + 1;
+    }
+    single_site(ctx, xlon, xlat, le, koff, k - 1, k, pm, rng, nrm);
+    if polish { rb_polish(ctx, xlon, xlat, le, koff, k, pm, rng, nrm); }
+    (acc, att)
+}
+
+/// Run the native single-track block + polish sampler.
+///
+/// @param knot_obs_start 0-based start index of each knot's contiguous obs block
+/// @param knot_obs_len number of observations in each knot
+/// @param obs_times observation timestamps (seconds since 1970)
+/// @param obs_light observed light values (processed as by the R fit)
+/// @param calibration c(intercept, slope)
+/// @param likelihood_params c(lambda, max_light, prob_slab)
+/// @param surr_mu per-knot surrogate mean, length 2K (lon, lat interleaved)
+/// @param surr_p per-knot surrogate 2x2 precision, length 4K (row-major)
+/// @param p_move movement precision (2x2, row-major)
+/// @param start_lon Fixed first-knot longitude
+/// @param start_lat Fixed first-knot latitude
+/// @param block_len Maximum block length (knots)
+/// @param sweeps Total sweeps
+/// @param burn Burn-in sweeps
+/// @param thin Thinning interval
+/// @param polish Whether to run the red-black single-site polish each sweep
+/// @param seed RNG seed; 0 means entropy
+/// @return List of per-knot posterior mean_lon, sd_lon, mean_lat, sd_lat, plus accept and n_kept
+/// @name run_block_track
+#[extendr]
+fn run_block_track(
+    knot_obs_start: &[i32], knot_obs_len: &[i32],
+    obs_times: &[f64], obs_light: &[f64],
+    calibration: Vec<f64>, likelihood_params: Vec<f64>,
+    surr_mu: Vec<f64>, surr_p: Vec<f64>, p_move: Vec<f64>,
+    start_lon: f64, start_lat: f64,
+    block_len: i32, sweeps: i32, burn: i32, thin: i32, polish: bool, seed: f64,
+) -> List {
+    let k = knot_obs_start.len();
+    let bl = block_len as usize;
+    let pm = [p_move[0], p_move[1], p_move[2], p_move[3]];
+    let eph: Vec<(f64, f64, f64, f64)> = obs_times.iter().map(|&t| solar_ephemeris(t)).collect();
+    let ctx = Ctx {
+        obs_start: knot_obs_start, obs_len: knot_obs_len, obs_light: &obs_light, eph: &eph,
+        intercept: calibration[0], slope: calibration[1],
+        lambda: likelihood_params[0], max_light: likelihood_params[1], prob_slab: likelihood_params[2],
+    };
+    let informative: Vec<bool> = knot_obs_len.iter().map(|&n| n > 0).collect();
+
+    let mut rng: StdRng = if seed == 0.0 { StdRng::from_entropy() } else { StdRng::seed_from_u64(seed as u64) };
+    let nrm = Normal::new(0.0, 1.0).unwrap();
+
+    // init at surrogate mean (start-fixed first knot)
+    let mut xlon = vec![0.0; k];
+    let mut xlat = vec![0.0; k];
+    for i in 0..k {
+        if informative[i] { xlon[i] = surr_mu[2*i]; xlat[i] = surr_mu[2*i + 1]; }
+        else { xlon[i] = start_lon; xlat[i] = start_lat; }
+    }
+    xlon[0] = start_lon; xlat[0] = start_lat;
+    let mut le: Vec<f64> = (0..k).map(|i| ctx.emit(i, xlon[i], xlat[i])).collect();
+
+    let (mut mlon, mut m2lon) = (vec![0.0; k], vec![0.0; k]);
+    let (mut mlat, mut m2lat) = (vec![0.0; k], vec![0.0; k]);
+    let mut n_kept = 0usize;
+    let (mut acc, mut att) = (0u64, 0u64);
+
+    let _ = &informative;  // (informative == obs_len>0; track_update reads ctx.obs_len directly)
+    for sweep in 0..sweeps {
+        let (a, t) = track_update(&ctx, &mut xlon, &mut xlat, &mut le, 0, k,
+                                  &surr_mu, &surr_p, &pm, bl, polish, &mut rng, &nrm);
+        acc += a; att += t;
+        if sweep >= burn && (sweep - burn) % thin == 0 {
+            n_kept += 1;
+            let inv = 1.0 / n_kept as f64;
+            for i in 0..k {
+                let dl = xlon[i] - mlon[i]; mlon[i] += dl*inv; m2lon[i] += dl*(xlon[i] - mlon[i]);
+                let da = xlat[i] - mlat[i]; mlat[i] += da*inv; m2lat[i] += da*(xlat[i] - mlat[i]);
+            }
+        }
+    }
+    let den = if n_kept > 1 { (n_kept - 1) as f64 } else { 1.0 };
+    let slon: Vec<f64> = m2lon.iter().map(|v| (v/den).sqrt()).collect();
+    let slat: Vec<f64> = m2lat.iter().map(|v| (v/den).sqrt()).collect();
+    list!(mean_lon = mlon, sd_lon = slon, mean_lat = mlat, sd_lat = slat,
+          accept = if att > 0 { acc as f64 / att as f64 } else { 0.0 }, n_kept = n_kept as i32)
+}
+
+/// Native hierarchical partial-pooling sampler over a panel of tracks.
+///
+/// Runs the whole Gibbs sweep natively: each individual's track is updated with
+/// the block+polish kernel conditional on its movement variance sig2_i, then
+/// sig2_i and the population scale beta are drawn from their conjugate
+/// full-conditionals. All arrays concatenate the individuals; knots_per_ind gives
+/// each individual's knot count, and knot_obs_start indexes the GLOBAL obs arrays.
+///
+/// @param n_ind Number of individuals
+/// @param knots_per_ind Knot count per individual (length n_ind)
+/// @param knot_obs_start Per-knot global obs start index (length sum knots_per_ind)
+/// @param knot_obs_len Per-knot obs count
+/// @param obs_times Global concatenated observation timestamps
+/// @param obs_light Global concatenated observed light
+/// @param cal Per-individual c(intercept, slope), length 2*n_ind
+/// @param lp Per-individual c(lambda, max_light, prob_slab), length 3*n_ind
+/// @param surr_mu Per-knot surrogate mean (2 per knot)
+/// @param surr_p Per-knot surrogate 2x2 precision (4 per knot)
+/// @param cinv Per-individual movement shape precision Cinv (2x2), length 4*n_ind
+/// @param start_lon Per-individual fixed first-knot longitude
+/// @param start_lat Per-individual fixed first-knot latitude
+/// @param a_pop InvGamma shape for sig2_i
+/// @param g0 Gamma shape hyperprior for beta
+/// @param h0 Gamma rate hyperprior for beta
+/// @param block_len Maximum block length
+/// @param sweeps Total sweeps
+/// @param burn Burn-in sweeps
+/// @param thin Thinning interval
+/// @param polish Whether to run the red-black polish each sweep
+/// @param seed RNG seed; 0 means entropy
+/// @return List with beta (kept draws) and sig2 (kept draws, n_kept*n_ind row-major)
+/// @name run_block_hier
+#[extendr]
+fn run_block_hier(
+    n_ind: i32, knots_per_ind: &[i32],
+    knot_obs_start: &[i32], knot_obs_len: &[i32],
+    obs_times: &[f64], obs_light: &[f64],
+    cal: Vec<f64>, lp: Vec<f64>,
+    surr_mu: Vec<f64>, surr_p: Vec<f64>, cinv: Vec<f64>,
+    start_lon: Vec<f64>, start_lat: Vec<f64>,
+    a_pop: f64, g0: f64, h0: f64,
+    block_len: i32, sweeps: i32, burn: i32, thin: i32, polish: bool, seed: f64,
+) -> List {
+    let n = n_ind as usize;
+    let bl = block_len as usize;
+    let ki: Vec<usize> = knots_per_ind.iter().map(|&x| x as usize).collect();
+    // knot offset per individual
+    let mut koff = vec![0usize; n];
+    for i in 1..n { koff[i] = koff[i-1] + ki[i-1]; }
+    let eph: Vec<(f64, f64, f64, f64)> = obs_times.iter().map(|&t| solar_ephemeris(t)).collect();
+
+    let mut rng: StdRng = if seed == 0.0 { StdRng::from_entropy() } else { StdRng::seed_from_u64(seed as u64) };
+    let nrm = Normal::new(0.0, 1.0).unwrap();
+
+    // per-individual state: track (local), emit cache, Cinv
+    let mut xlon: Vec<Vec<f64>> = Vec::with_capacity(n);
+    let mut xlat: Vec<Vec<f64>> = Vec::with_capacity(n);
+    let mut le:   Vec<Vec<f64>> = Vec::with_capacity(n);
+    let mut sig2 = vec![0.0f64; n];
+    let cinv_i: Vec<[f64;4]> = (0..n).map(|i| [cinv[4*i], cinv[4*i+1], cinv[4*i+2], cinv[4*i+3]]).collect();
+
+    // build a Ctx per individual (borrows global obs arrays + per-individual cal/lp)
+    let ctxs: Vec<Ctx> = (0..n).map(|i| Ctx {
+        obs_start: knot_obs_start, obs_len: knot_obs_len, obs_light: &obs_light, eph: &eph,
+        intercept: cal[2*i], slope: cal[2*i+1],
+        lambda: lp[3*i], max_light: lp[3*i+1], prob_slab: lp[3*i+2],
+    }).collect();
+
+    for i in 0..n {
+        let k = ki[i];
+        let mut xl = vec![0.0; k]; let mut xt = vec![0.0; k];
+        for t in 0..k {
+            let gk = koff[i] + t;
+            if knot_obs_len[gk] > 0 { xl[t] = surr_mu[2*gk]; xt[t] = surr_mu[2*gk + 1]; }
+            else { xl[t] = start_lon[i]; xt[t] = start_lat[i]; }
+        }
+        xl[0] = start_lon[i]; xt[0] = start_lat[i];
+        let lei: Vec<f64> = (0..k).map(|t| ctxs[i].emit(koff[i] + t, xl[t], xt[t])).collect();
+        // data-driven sig2 start from initial increments
+        let mut ss = 0.0;
+        for t in 1..k {
+            ss += quad2(&cinv_i[i], xl[t]-xl[t-1], xt[t]-xt[t-1]);
+        }
+        sig2[i] = (ss / (k as f64 - 1.0)).max(1e-6);
+        xlon.push(xl); xlat.push(xt); le.push(lei);
+    }
+    let mut beta = { let s: f64 = sig2.iter().sum(); (s / n as f64) * (a_pop - 1.0) };
+
+    let nkeep = ((sweeps - burn + thin - 1) / thin).max(0) as usize;
+    let mut beta_draws: Vec<f64> = Vec::with_capacity(nkeep);
+    let mut sig2_draws: Vec<f64> = Vec::with_capacity(nkeep * n);
+
+    for sweep in 0..sweeps {
+        for i in 0..n {
+            let k = ki[i];
+            let pm = [cinv_i[i][0]/sig2[i], cinv_i[i][1]/sig2[i], cinv_i[i][2]/sig2[i], cinv_i[i][3]/sig2[i]];
+            track_update(&ctxs[i], &mut xlon[i], &mut xlat[i], &mut le[i], koff[i], k,
+                         &surr_mu, &surr_p, &pm, bl, polish, &mut rng, &nrm);
+            // conjugate sig2_i | track ~ InvGamma(a_pop + (k-1), beta + 0.5 SS)
+            let mut ss = 0.0;
+            for t in 1..k { ss += quad2(&cinv_i[i], xlon[i][t]-xlon[i][t-1], xlat[i][t]-xlat[i][t-1]); }
+            let g = Gamma::new(a_pop + (k as f64 - 1.0), 1.0 / (beta + 0.5*ss)).unwrap();
+            sig2[i] = 1.0 / rng.sample(g);
+        }
+        // conjugate beta | . ~ Gamma(g0 + n*a_pop, h0 + sum 1/sig2)
+        let inv_sum: f64 = sig2.iter().map(|s| 1.0/s).sum();
+        let gb = Gamma::new(g0 + n as f64 * a_pop, 1.0 / (h0 + inv_sum)).unwrap();
+        beta = rng.sample(gb);
+
+        if sweep >= burn && (sweep - burn) % thin == 0 {
+            beta_draws.push(beta);
+            for i in 0..n { sig2_draws.push(sig2[i]); }
+        }
+    }
+    let nk = beta_draws.len() as i32;
+    list!(beta = beta_draws, sig2 = sig2_draws, n_kept = nk, n_ind = n_ind)
+}
+
 extendr_module! {
     mod invtwilightfree;
     fn solar_zenith;
@@ -1178,4 +1574,6 @@ extendr_module! {
     fn run_particle_filter;
     fn eval_logpk_grid;
     fn run_grid_hmm;
+    fn run_block_track;
+    fn run_block_hier;
 }

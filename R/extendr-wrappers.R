@@ -81,4 +81,61 @@ eval_logpk_grid <- function(lon, lat, unix_times, obs_light, calibration, likeli
 
 run_grid_hmm <- function(lon, lat, knot_times, obs_times, obs_light, fixed_idx, fixed_lon, fixed_lat, diffusion, trans_prob, calibration, likelihood_params, aux_logl) .Call(wrap__run_grid_hmm, lon, lat, knot_times, obs_times, obs_light, fixed_idx, fixed_lon, fixed_lat, diffusion, trans_prob, calibration, likelihood_params, aux_logl)
 
+#' Run the native single-track block + polish sampler.
+#'
+#' @param knot_obs_start 0-based start index of each knot's contiguous obs block
+#' @param knot_obs_len number of observations in each knot
+#' @param obs_times observation timestamps (seconds since 1970)
+#' @param obs_light observed light values (processed as by the R fit)
+#' @param calibration c(intercept, slope)
+#' @param likelihood_params c(lambda, max_light, prob_slab)
+#' @param surr_mu per-knot surrogate mean, length 2K (lon, lat interleaved)
+#' @param surr_p per-knot surrogate 2x2 precision, length 4K (row-major)
+#' @param p_move movement precision (2x2, row-major)
+#' @param start_lon Fixed first-knot longitude
+#' @param start_lat Fixed first-knot latitude
+#' @param block_len Maximum block length (knots)
+#' @param sweeps Total sweeps
+#' @param burn Burn-in sweeps
+#' @param thin Thinning interval
+#' @param polish Whether to run the red-black single-site polish each sweep
+#' @param seed RNG seed; 0 means entropy
+#' @return List of per-knot posterior mean_lon, sd_lon, mean_lat, sd_lat, plus accept and n_kept
+#' @name run_block_track
+run_block_track <- function(knot_obs_start, knot_obs_len, obs_times, obs_light, calibration, likelihood_params, surr_mu, surr_p, p_move, start_lon, start_lat, block_len, sweeps, burn, thin, polish, seed) .Call(wrap__run_block_track, knot_obs_start, knot_obs_len, obs_times, obs_light, calibration, likelihood_params, surr_mu, surr_p, p_move, start_lon, start_lat, block_len, sweeps, burn, thin, polish, seed)
+
+#' Native hierarchical partial-pooling sampler over a panel of tracks.
+#'
+#' Runs the whole Gibbs sweep natively: each individual's track is updated with
+#' the block+polish kernel conditional on its movement variance sig2_i, then
+#' sig2_i and the population scale beta are drawn from their conjugate
+#' full-conditionals. All arrays concatenate the individuals; knots_per_ind gives
+#' each individual's knot count, and knot_obs_start indexes the GLOBAL obs arrays.
+#'
+#' @param n_ind Number of individuals
+#' @param knots_per_ind Knot count per individual (length n_ind)
+#' @param knot_obs_start Per-knot global obs start index (length sum knots_per_ind)
+#' @param knot_obs_len Per-knot obs count
+#' @param obs_times Global concatenated observation timestamps
+#' @param obs_light Global concatenated observed light
+#' @param cal Per-individual c(intercept, slope), length 2*n_ind
+#' @param lp Per-individual c(lambda, max_light, prob_slab), length 3*n_ind
+#' @param surr_mu Per-knot surrogate mean (2 per knot)
+#' @param surr_p Per-knot surrogate 2x2 precision (4 per knot)
+#' @param cinv Per-individual movement shape precision Cinv (2x2), length 4*n_ind
+#' @param start_lon Per-individual fixed first-knot longitude
+#' @param start_lat Per-individual fixed first-knot latitude
+#' @param a_pop InvGamma shape for sig2_i
+#' @param g0 Gamma shape hyperprior for beta
+#' @param h0 Gamma rate hyperprior for beta
+#' @param block_len Maximum block length
+#' @param sweeps Total sweeps
+#' @param burn Burn-in sweeps
+#' @param thin Thinning interval
+#' @param polish Whether to run the red-black polish each sweep
+#' @param seed RNG seed; 0 means entropy
+#' @return List with beta (kept draws) and sig2 (kept draws, n_kept*n_ind row-major)
+#' @name run_block_hier
+run_block_hier <- function(n_ind, knots_per_ind, knot_obs_start, knot_obs_len, obs_times, obs_light, cal, lp, surr_mu, surr_p, cinv, start_lon, start_lat, a_pop, g0, h0, block_len, sweeps, burn, thin, polish, seed) .Call(wrap__run_block_hier, n_ind, knots_per_ind, knot_obs_start, knot_obs_len, obs_times, obs_light, cal, lp, surr_mu, surr_p, cinv, start_lon, start_lat, a_pop, g0, h0, block_len, sweeps, burn, thin, polish, seed)
+
 # nolint end
