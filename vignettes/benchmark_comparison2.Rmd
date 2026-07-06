@@ -34,6 +34,10 @@ library(ggplot2)
 library(patchwork)
 library(dplyr)
 library(tidyr)
+# TwilightFree is not on CRAN; install with:
+#   remotes::install_github("ABindoff/TwilightFree")
+has_tf <- requireNamespace("TwilightFree", quietly = TRUE)
+if (has_tf) library(TwilightFree)
 
 # Helper for Distance
 get_dist <- function(lon1, lat1, lon2, lat2) {
@@ -46,6 +50,30 @@ get_dist <- function(lon1, lat1, lon2, lat2) {
 
 # Load the Scenarios and the Ground Truth
 track_data <- readRDS("../scratch/simulated_seal_light_scenarios.rds")
+
+make_scenario_plot <- function(res, title) {
+  p <- ggplot() +
+    geom_path(data = track_data, aes(x = true_lon, y = true_lat),
+              color = "black", linewidth = 1.5, alpha = 0.2) +
+    geom_path(data = res$inv_guided, aes(x = Lon, y = Lat, color = "invTF (Guided)"), linewidth = 1.0) +
+    geom_path(data = res$inv_ffbs,   aes(x = Lon, y = Lat, color = "invTF (FFBS)"),   linewidth = 1.0) +
+    geom_path(data = res$inv_grid,   aes(x = Lon, y = Lat, color = "invTF (Grid)"),   linewidth = 1.0)
+  if (!is.null(res$flightr))
+    p <- p + geom_path(data = res$flightr, aes(x = Lon, y = Lat, color = "FLightR"), linewidth = 1.0)
+  if (!is.null(res$sgat))
+    p <- p + geom_path(data = res$sgat, aes(x = Lon, y = Lat, color = "SGAT"), linewidth = 1.0)
+  if (!is.null(res$orig_tf))
+    p <- p + geom_path(data = res$orig_tf, aes(x = Lon, y = Lat, color = "TwilightFree"), linewidth = 1.0)
+  p + theme_minimal() + labs(title = title, color = "Method") +
+    scale_color_manual(values = c(
+      "invTF (Guided)"  = "#E41A1C",
+      "invTF (FFBS)"    = "#00BCD4",
+      "invTF (Grid)"    = "#FF7F00",
+      "TwilightFree"    = "#984EA3",
+      "FLightR"         = "#377EB8",
+      "SGAT"            = "#4DAF4A"
+    ))
+}
 
 get_paths <- function(scenario = "cloudy") {
   prefix <- paste0("_seal_", scenario)
@@ -69,6 +97,18 @@ get_paths <- function(scenario = "cloudy") {
     )
   })
 
+  # Fit invTF (FFBS)
+  t_inv_ffbs <- system.time({
+    fit_inv_ffbs <- TwilightFreeSMC(
+      date_time = track_data$time, light = track_data[[light_col]],
+      start_lat = track_data$true_lat[1], start_lon = track_data$true_lon[1],
+      end_lat = track_data$true_lat[nrow(track_data)], end_lon = track_data$true_lon[nrow(track_data)],
+      method = "ffbs", n_particles = 1000,
+      diffusion = c(16, 80), trans_prob = trans_mat,
+      calibration = cal, likelihood_params = lp
+    )
+  })
+
   # Fit invTF (Grid)
   t_inv_grid <- system.time({
     grid <- makeGrid(lon=c(130, 185), lat=c(-85, -40), cell.size=2, mask="sea")
@@ -84,72 +124,78 @@ get_paths <- function(scenario = "cloudy") {
     )
   })
   
-  # Load Caches
-  f_flightr <- paste0("cache_flightr", prefix, ".rds")
-  f_sgat <- paste0("cache_sgat", prefix, ".rds")
-  f_orig <- paste0("cache_orig_tf", prefix, ".rds")
-  
-  if (!file.exists(f_flightr) || !file.exists(f_sgat)) return(NULL)
-  
-  c_flightr <- readRDS(f_flightr)
-  c_sgat <- readRDS(f_sgat)
-  
-  # Unwrap
-  find_fit <- function(obj, target) {
-    curr <- obj
-    for(i in 1:10) { # deep search
-      if (target %in% names(curr)) return(curr)
-      if ("fit" %in% names(curr)) curr <- curr$fit else break
-    }
-    return(NULL)
-  }
-  
-  obj_flightr <- find_fit(c_flightr, "Results")
-  obj_sgat <- find_fit(c_sgat, "model")
-  
-  if (is.null(obj_flightr) || is.null(obj_sgat)) {
-    warning(paste("Could not unwrap caches for", scenario))
-    return(NULL)
-  }
-  
+  # invTF results are always present; build them now.
   df_inv_guided <- data.frame(Time = fit_inv_guided$knot_times, Lat = fit_inv_guided$lat, Lon = fit_inv_guided$lon, Method = "invTF (Guided)")
-  df_inv_grid <- data.frame(Time = as.POSIXct(fit_inv_grid$fit$time, origin="1970-01-01", tz="UTC"), Lat = fit_inv_grid$fit$lat, Lon = fit_inv_grid$fit$lon, Method = "invTF (Grid)")
-  df_flightr <- data.frame(Time = obj_flightr$Results$Quantiles$time, Lat = obj_flightr$Results$Quantiles$Medianlat, Lon = obj_flightr$Results$Quantiles$Medianlon, Method = "FLightR")
-  
-  # Handle SGAT differences
-  sgat_time <- if (!is.null(obj_sgat$model$time)) obj_sgat$model$time else obj_sgat$model$z
-  df_sgat <- data.frame(Time = sgat_time, Lat = apply(obj_sgat$x[[1]][,2,], 1, mean), Lon = apply(obj_sgat$x[[1]][,1,], 1, mean), Method = "SGAT")
-  df_orig_tf <- NULL
-  if (file.exists(f_orig)) {
-    obj_orig <- readRDS(f_orig)
-    trip_orig <- TwilightFree::trip(obj_orig$fit)
-    df_orig_tf <- data.frame(Time = as.POSIXct(trip_orig[, "Date"], origin="1970-01-01", tz="UTC"), Lat = trip_orig[, "Lat"], Lon = trip_orig[, "Lon"], Method = "TwilightFree")
+  df_inv_ffbs   <- data.frame(Time = fit_inv_ffbs$knot_times,   Lat = fit_inv_ffbs$lat,   Lon = fit_inv_ffbs$lon,   Method = "invTF (FFBS)")
+  df_inv_grid   <- data.frame(Time = as.POSIXct(fit_inv_grid$fit$time, origin="1970-01-01", tz="UTC"), Lat = fit_inv_grid$fit$lat, Lon = fit_inv_grid$fit$lon, Method = "invTF (Grid)")
+
+  # Load caches — failures stored as list(fit=NULL,...) are handled gracefully.
+  f_flightr <- paste0("cache_flightr", prefix, ".rds")
+  f_sgat    <- paste0("cache_sgat",    prefix, ".rds")
+  f_orig    <- paste0("cache_orig_tf", prefix, ".rds")
+
+  unwrap <- function(path, target) {
+    if (!file.exists(path)) return(NULL)
+    obj <- readRDS(path)
+    # Walk into $fit once if needed, then look for target key.
+    for (candidate in list(obj, obj$fit)) {
+      if (!is.null(candidate) && target %in% names(candidate)) return(candidate)
+    }
+    NULL
   }
-  
+
+  obj_flightr <- unwrap(f_flightr, "Results")
+  obj_sgat    <- unwrap(f_sgat,    "model")
+  obj_orig    <- if (file.exists(f_orig)) readRDS(f_orig) else NULL
+
+  df_flightr <- if (!is.null(obj_flightr))
+    data.frame(Time = obj_flightr$Results$Quantiles$time,
+               Lat  = obj_flightr$Results$Quantiles$Medianlat,
+               Lon  = obj_flightr$Results$Quantiles$Medianlon,
+               Method = "FLightR")
+  else NULL
+
+  df_sgat <- if (!is.null(obj_sgat)) {
+    sgat_time <- if (!is.null(obj_sgat$model$time)) obj_sgat$model$time else obj_sgat$model$z
+    data.frame(Time = sgat_time,
+               Lat  = apply(obj_sgat$x[[1]][, 2, ], 1, mean),
+               Lon  = apply(obj_sgat$x[[1]][, 1, ], 1, mean),
+               Method = "SGAT")
+  } else NULL
+
+  df_orig_tf <- if (!is.null(obj_orig) && !is.null(obj_orig$fit) && has_tf) {
+    tryCatch({
+      trip_orig <- TwilightFree::trip(obj_orig$fit)
+      data.frame(Time = as.POSIXct(trip_orig[, "Date"], origin="1970-01-01", tz="UTC"),
+                 Lat  = trip_orig[, "Lat"],
+                 Lon  = trip_orig[, "Lon"],
+                 Method = "TwilightFree")
+    }, error = function(e) NULL)
+  } else NULL
+
   # Metrics
   calc_metrics <- function(df) {
     if (is.null(df) || nrow(df) == 0) return(list(RMSE=NA, HDI=c(NA,NA)))
     t_lat <- approx(as.numeric(track_data$time), track_data$true_lat, xout = as.numeric(df$Time))$y
     t_lon <- approx(as.numeric(track_data$time), track_data$true_lon, xout = as.numeric(df$Time))$y
-    errs <- get_dist(df$Lon, df$Lat, t_lon, t_lat)
+    errs  <- get_dist(df$Lon, df$Lat, t_lon, t_lat)
     list(RMSE = sqrt(mean(errs^2, na.rm=TRUE)), HDI = quantile(errs, c(0.025, 0.975), na.rm=TRUE))
   }
-  
-  m_inv_guided <- calc_metrics(df_inv_guided)
-  m_inv_grid <- calc_metrics(df_inv_grid)
-  m_flightr <- calc_metrics(df_flightr)
-  m_sgat <- calc_metrics(df_sgat)
-  m_orig_tf <- if (!is.null(df_orig_tf)) calc_metrics(df_orig_tf) else list(RMSE=NA, HDI=c(NA,NA))
-  
-  methods_out <- c("invTF (Guided)", "invTF (Grid)", "FLightR", "SGAT", "TwilightFree")
-  rmses <- c(m_inv_guided$RMSE, m_inv_grid$RMSE, m_flightr$RMSE, m_sgat$RMSE, m_orig_tf$RMSE)
-  
+
+  methods_out <- c("invTF (Guided)", "invTF (FFBS)", "invTF (Grid)", "FLightR", "SGAT", "TwilightFree")
+  rmses <- c(
+    calc_metrics(df_inv_guided)$RMSE,
+    calc_metrics(df_inv_ffbs)$RMSE,
+    calc_metrics(df_inv_grid)$RMSE,
+    calc_metrics(df_flightr)$RMSE,
+    calc_metrics(df_sgat)$RMSE,
+    calc_metrics(df_orig_tf)$RMSE
+  )
+
   list(
-    inv_guided = df_inv_guided, inv_grid = df_inv_grid, flightr = df_flightr, sgat = df_sgat, orig_tf = df_orig_tf,
-    metrics = data.frame(
-      Method = methods_out,
-      `RMSE (km)` = round(rmses, 1)
-    )
+    inv_guided = df_inv_guided, inv_ffbs = df_inv_ffbs, inv_grid = df_inv_grid,
+    flightr = df_flightr, sgat = df_sgat, orig_tf = df_orig_tf,
+    metrics = data.frame(Method = methods_out, `RMSE (km)` = round(rmses, 1))
   )
 }
 ```
@@ -158,65 +204,21 @@ get_paths <- function(scenario = "cloudy") {
 
 ```{r cloudy, message=FALSE, warning=FALSE}
 res_cloudy <- get_paths("cloudy")
-if (!is.null(res_cloudy)) {
-  p <- ggplot() +
-    geom_path(data = track_data, aes(x = true_lon, y = true_lat), color = "black", size = 1.5, alpha = 0.2) +
-    geom_path(data = res_cloudy$inv_guided, aes(x = Lon, y = Lat, color = "invTF (Guided)"), size = 1.0) +
-    geom_path(data = res_cloudy$inv_grid, aes(x = Lon, y = Lat, color = "invTF (Grid)"), size = 1.0) +
-    geom_path(data = res_cloudy$flightr, aes(x = Lon, y = Lat, color = "FLightR"), size = 1.0) +
-    geom_path(data = res_cloudy$sgat, aes(x = Lon, y = Lat, color = "SGAT"), size = 1.0)
-  
-  if (!is.null(res_cloudy$orig_tf)) {
-    p <- p + geom_path(data = res_cloudy$orig_tf, aes(x = Lon, y = Lat, color = "TwilightFree"), size = 1.0)
-  }
-  
-  p + theme_minimal() + labs(title = "Cloudy Scenario", color = "Method") +
-    scale_color_manual(values = c("invTF (Guided)" = "#E41A1C", "invTF (Grid)" = "#FF7F00", "TwilightFree" = "#984EA3", "FLightR" = "#377EB8", "SGAT" = "#4DAF4A"))
-} else {
-  print("Caches not yet ready for Cloudy scenario.")
-}
+make_scenario_plot(res_cloudy, "Cloudy Scenario")
 ```
 
 ## 2. Scenario: Shaded during ARS (Foraging)
 
 ```{r shaded, message=FALSE, warning=FALSE}
 res_shaded <- get_paths("shaded")
-if (!is.null(res_shaded)) {
-  p <- ggplot() +
-    geom_path(data = track_data, aes(x = true_lon, y = true_lat), color = "black", size = 1.5, alpha = 0.2) +
-    geom_path(data = res_shaded$inv_guided, aes(x = Lon, y = Lat, color = "invTF (Guided)"), size = 1.0) +
-    geom_path(data = res_shaded$inv_grid, aes(x = Lon, y = Lat, color = "invTF (Grid)"), size = 1.0) +
-    geom_path(data = res_shaded$flightr, aes(x = Lon, y = Lat, color = "FLightR"), size = 1.0) +
-    geom_path(data = res_shaded$sgat, aes(x = Lon, y = Lat, color = "SGAT"), size = 1.0)
-  
-  if (!is.null(res_shaded$orig_tf)) {
-    p <- p + geom_path(data = res_shaded$orig_tf, aes(x = Lon, y = Lat, color = "TwilightFree"), size = 1.0)
-  }
-  
-  p + theme_minimal() + labs(title = "Shaded ARS Scenario", color = "Method") +
-    scale_color_manual(values = c("invTF (Guided)" = "#E41A1C", "invTF (Grid)" = "#FF7F00", "TwilightFree" = "#984EA3", "FLightR" = "#377EB8", "SGAT" = "#4DAF4A"))
-}
+make_scenario_plot(res_shaded, "Shaded ARS Scenario")
 ```
 
 ## 3. Scenario: Shaded + ALAN near Colony
 
 ```{r alan, message=FALSE, warning=FALSE}
 res_alan <- get_paths("alan")
-if (!is.null(res_alan)) {
-  p <- ggplot() +
-    geom_path(data = track_data, aes(x = true_lon, y = true_lat), color = "black", size = 1.5, alpha = 0.2) +
-    geom_path(data = res_alan$inv_guided, aes(x = Lon, y = Lat, color = "invTF (Guided)"), size = 1.0) +
-    geom_path(data = res_alan$inv_grid, aes(x = Lon, y = Lat, color = "invTF (Grid)"), size = 1.0) +
-    geom_path(data = res_alan$flightr, aes(x = Lon, y = Lat, color = "FLightR"), size = 1.0) +
-    geom_path(data = res_alan$sgat, aes(x = Lon, y = Lat, color = "SGAT"), size = 1.0)
-  
-  if (!is.null(res_alan$orig_tf)) {
-    p <- p + geom_path(data = res_alan$orig_tf, aes(x = Lon, y = Lat, color = "TwilightFree"), size = 1.0)
-  }
-  
-  p + theme_minimal() + labs(title = "ALAN + Shading Scenario", color = "Method") +
-    scale_color_manual(values = c("invTF (Guided)" = "#E41A1C", "invTF (Grid)" = "#FF7F00", "TwilightFree" = "#984EA3", "FLightR" = "#377EB8", "SGAT" = "#4DAF4A"))
-}
+make_scenario_plot(res_alan, "ALAN + Shading Scenario")
 ```
 
 ## Summary Tables

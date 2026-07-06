@@ -43,7 +43,7 @@ find_fit <- function(obj, target) {
 }
 
 # Core benchmarking function
-get_bench_data <- function(scenario = "ideal", track_data) {
+get_bench_data <- function(scenario = "ideal", track_data, grid = bench_grid) {
   # Prefix for caches
   f_prefix <- paste0("_seal_", scenario)
   light_col <- if(scenario == "ideal") "light_ideal" else if(scenario == "cloudy") "light_ideal" else paste0("light_", scenario)
@@ -61,24 +61,23 @@ get_bench_data <- function(scenario = "ideal", track_data) {
       diffusion = c(16, 80),
       trans_prob = trans_flat,
       calibration = c(558.5, 5.818),
-      likelihood_params = c(1.0, 64, 2.0, 20.0)
+      likelihood_params = c(1.0, 64, 0.05)
     )
   })
-  
+
   # Fit invTF (Grid)
   t_inv_grid <- system.time({
-    grid <- makeGrid(lon=c(130, 185), lat=c(-85, -40), cell.size=1.0, mask="sea")
     fit_inv_grid <- TwilightFreeGrid(
-      date_time = as.POSIXct(track_data$time, tz="UTC"), 
-      light = track_data[[light_col]], 
+      date_time = as.POSIXct(track_data$time, tz="UTC"),
+      light = track_data[[light_col]],
       grid = grid,
       start_lat = track_data$true_lat[1], start_lon = track_data$true_lon[1],
       end_lat = track_data$true_lat[nrow(track_data)], end_lon = track_data$true_lon[nrow(track_data)],
-      step_hours = 4.0,
+      step_hours = 12.0,
       diffusion = c(16, 80),
       trans_prob = trans_flat,
       calibration = c(558.5, 5.818),
-      likelihood_params = c(1.0, 64, 2.0, 20.0)
+      likelihood_params = c(1.0, 64, 0.05)
     )
   })
   
@@ -193,8 +192,8 @@ get_bench_data <- function(scenario = "ideal", track_data) {
   )
 
   list(
-    paths = bind_rows(df_inv_guided, df_inv_grid, df_flightr, df_sgat) %>% mutate(Scenario = scenario),
-    metrics = metrics %>% mutate(Scenario = scenario),
+    paths = bind_rows(df_inv_guided, df_inv_grid, df_flightr, df_sgat) %>% dplyr::mutate(Scenario = scenario),
+    metrics = metrics %>% dplyr::mutate(Scenario = scenario),
     states = bind_rows(df_states_guided, df_states_grid)
   )
 }
@@ -214,6 +213,11 @@ This comprehensive benchmark evaluates `invTwilightFree` against `FLightR` and `
 # Path adjustment for vignette rendering
 track_path <- if(file.exists("scratch/simulated_seal_light_scenarios.rds")) "scratch/simulated_seal_light_scenarios.rds" else "../scratch/simulated_seal_light_scenarios.rds"
 track_data <- readRDS(track_path)
+
+# Build grid once — ne_countries() can block on a network fetch if called
+# repeatedly; building outside get_bench_data also avoids redundant rasterisation.
+bench_grid <- makeGrid(lon = c(130, 185), lat = c(-85, -40), cell.size = 1.0, mask = "sea")
+
 scenarios <- c("ideal", "cloudy", "shaded", "alan")
 all_results <- lapply(scenarios, function(s) get_bench_data(s, track_data))
 all_paths <- bind_rows(lapply(all_results, function(x) x$paths))
@@ -225,9 +229,9 @@ all_states <- bind_rows(lapply(all_results, function(x) x$states))
 
 ```{r summary_table, echo=FALSE}
 summary_tab <- all_metrics %>%
-  select(Scenario, Method, RMSE, Time_s) %>%
-  mutate(RMSE = round(RMSE, 1), Time_s = round(Time_s, 1)) %>%
-  pivot_wider(names_from = Scenario, values_from = c(RMSE, Time_s))
+  dplyr::select(Scenario, Method, RMSE, Time_s) %>%
+  dplyr::mutate(RMSE = round(RMSE, 1), Time_s = round(Time_s, 1)) %>%
+  tidyr::pivot_wider(names_from = Scenario, values_from = c(RMSE, Time_s))
 
 knitr::kable(summary_tab, caption = "Accuracy (RMSE km) and Performance (Time s)")
 ```
@@ -236,7 +240,7 @@ knitr::kable(summary_tab, caption = "Accuracy (RMSE km) and Performance (Time s)
 
 ```{r plot_trajectories, echo=FALSE, fig.height=14}
 plot_scenario <- function(scen) {
-  scen_paths <- all_paths %>% filter(Scenario == scen)
+  scen_paths <- all_paths %>% dplyr::filter(Scenario == scen)
   
   ggplot() +
     # True track as a thick, very soft gray line
