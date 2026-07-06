@@ -66,6 +66,39 @@ hemisphere_prior <- function(hemisphere_by_date, softness = 1e-3, boundary = 0) 
 }
 
 
+#' Spherical area (stationary) prior over grid cells
+#'
+#' Returns the log of each cell's relative area, `log(cos(latitude))`, as a
+#' location-prior source: a lon/lat grid has equal angular cells but unequal area
+#' (cells shrink poleward by `cos(lat)`), so this mildly favours equatorward
+#' cells in proportion to the area they represent.
+#'
+#' Scope (important): this is the STATIONARY part of the spherical area measure
+#' only. It does NOT make the grid HMM a fully spherical movement model. Isotropic
+#' Brownian motion on a sphere also carries an equatorward drift in its
+#' transition (a `tan(lat)` term), which a per-cell emission prior cannot
+#' reproduce. SBC showed this term is far too weak to bridge the planar-vs-
+#' spherical movement gap (see notes/topology/sbc_design.md). Treat it as a weak
+#' optional prior, not a calibration fix.
+#'
+#' Pair with [identity_rule()]. Longitude is unaffected (the factor is constant
+#' along a parallel).
+#'
+#' @return A source closure of class `tf_source`: `function(lon, lat, date)`
+#'   returning `log(cos(lat))` per cell (`date` is ignored).
+#' @seealso [identity_rule()], [TwilightFreeGrid()]
+#' @examples
+#' area_prior()(lon = c(0, 0), lat = c(-60, -30))   # poleward cell down-weighted
+#' @export
+area_prior <- function() {
+  src <- function(lon, lat, date = NULL) {
+    log(pmax(cos(lat * pi / 180), 1e-6))
+  }
+  class(src) <- c("tf_source", "function")
+  src
+}
+
+
 #' Identity rule: treat the source field as a (log-)prior density
 #'
 #' A pass-through rule for `location_term()`s whose source already encodes the
