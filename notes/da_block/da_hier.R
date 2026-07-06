@@ -254,45 +254,51 @@ if (isTRUE(cfg$benefit)) {
   message("running INDEPENDENT (unpooled) fit ...")
   set.seed(cfg$seed)
   Ri <- summ_run(run_hier("block", cfg$sweeps, cfg$burn, cfg$thin, pool = FALSE))
-  truth <- PAN$sd_day_true
+  truth <- PAN$sd_day_true; days <- PAN$days
   est_p <- colMeans(Rp$sig); est_i <- colMeans(Ri$sig)
-  rmse <- function(e) sqrt(mean((e - truth)^2)); mae <- function(e) mean(abs(e - truth))
-  cat("\n=== POOLING BENEFIT: per-individual movement sigma_i (km/day) ===\n")
-  cat(sprintf("%-6s %8s %10s %10s\n", "ind", "truth", "independent", "pooled"))
-  for (k in seq_len(N))
-    cat(sprintf("%-6d %8.1f %10.1f %10.1f\n", k, truth[k], est_i[k], est_p[k]))
-  cat(sprintf("\nRMSE vs truth:  independent %.2f  |  pooled %.2f   (%.0f%% lower)\n",
-      rmse(est_i), rmse(est_p), 100 * (1 - rmse(est_p) / rmse(est_i))))
-  cat(sprintf("MAE  vs truth:  independent %.2f  |  pooled %.2f\n", mae(est_i), mae(est_p)))
-  cat(sprintf("SD of estimates: independent %.2f | pooled %.2f (truth SD %.2f)\n",
-      sd(est_i), sd(est_p), sd(truth)))
+  rmse <- function(e, s = seq_len(N)) sqrt(mean((e[s] - truth[s])^2))
+  cat("\n=== POOLING BENEFIT (heterogeneous track lengths): sigma_i (km/day) ===\n")
+  cat(sprintf("%-4s %6s %8s %12s %8s\n", "ind", "days", "truth", "independent", "pooled"))
+  o <- order(days)
+  for (k in o)
+    cat(sprintf("%-4d %6.0f %8.1f %12.1f %8.1f\n", k, days[k], truth[k], est_i[k], est_p[k]))
+  shortS <- which(days <= stats::median(days)); longS <- which(days > stats::median(days))
+  cat(sprintf("\nRMSE vs truth        indep %.2f | pooled %.2f  (%.0f%% lower)\n",
+      rmse(est_i), rmse(est_p), 100*(1 - rmse(est_p)/rmse(est_i))))
+  cat(sprintf("  short tracks       indep %.2f | pooled %.2f  (%.0f%% lower)\n",
+      rmse(est_i, shortS), rmse(est_p, shortS), 100*(1 - rmse(est_p,shortS)/rmse(est_i,shortS))))
+  cat(sprintf("  long tracks        indep %.2f | pooled %.2f  (%.0f%% lower)\n",
+      rmse(est_i, longS), rmse(est_p, longS), 100*(1 - rmse(est_p,longS)/rmse(est_i,longS))))
+  shrink <- abs(est_i - est_p)
+  cat(sprintf("mean |shrinkage|:    short %.1f | long %.1f km/day (partial pooling: short shrink more)\n",
+      mean(shrink[shortS]), mean(shrink[longS])))
 
   out_png <- if (exists("OUT_PNG")) OUT_PNG else "pooling_benefit.png"
   grDevices::png(out_png, width = 1150, height = 500)
   graphics::par(mfrow = c(1, 2), mar = c(4, 4, 3, 1))
-  # (a) estimate vs truth, with indep->pooled shrinkage arrows
+  pop_lvl <- mean(Rp$pop, na.rm = TRUE)
+  # colour ramp by track length (short = red, long = blue)
+  drank <- (days - min(days)) / (max(days) - min(days) + 1e-9)
+  col_i <- grDevices::rgb(1 - drank, 0, drank)
+  # (a) estimate vs truth, indep -> pooled shrinkage arrows, coloured by length
   rng <- range(c(truth, est_i, est_p))
-  plot(truth, est_i, pch = 19, col = "firebrick", xlim = rng, ylim = rng,
+  plot(truth, est_i, pch = 1, col = col_i, cex = 1.4, lwd = 2, xlim = rng, ylim = rng,
        xlab = "true sigma_i (km/day)", ylab = "estimate (km/day)",
-       main = "estimate vs truth")
+       main = "estimate vs truth (colour = track length)")
   graphics::abline(0, 1, col = "grey60", lwd = 2)
-  graphics::segments(truth, est_i, truth, est_p, col = "grey70")
-  graphics::points(truth, est_p, pch = 19, col = "royalblue")
-  graphics::legend("topleft", c("independent", "pooled", "1:1"),
-                   col = c("firebrick", "royalblue", "grey60"), pch = c(19, 19, NA),
-                   lwd = c(NA, NA, 2), bty = "n")
-  # (b) shrinkage toward the population level
-  o <- order(truth)
-  plot(seq_len(N), est_i[o], pch = 19, col = "firebrick", ylim = rng,
-       xlab = "individual (ordered by truth)", ylab = "sigma_i (km/day)",
-       main = "shrinkage toward the population")
-  graphics::segments(seq_len(N), est_i[o], seq_len(N), est_p[o], col = "grey70")
-  graphics::points(seq_len(N), est_p[o], pch = 19, col = "royalblue")
-  graphics::points(seq_len(N), truth[o], pch = 4, col = "black", lwd = 2)
-  graphics::abline(h = mean(Rp$pop, na.rm = TRUE), col = "royalblue", lty = 2)
-  graphics::legend("topleft", c("independent", "pooled", "truth", "pop level"),
-                   col = c("firebrick", "royalblue", "black", "royalblue"),
-                   pch = c(19, 19, 4, NA), lty = c(NA, NA, NA, 2), bty = "n")
+  graphics::abline(h = pop_lvl, col = "grey70", lty = 3)
+  graphics::segments(truth, est_i, truth, est_p, col = "grey80")
+  graphics::points(truth, est_p, pch = 19, col = col_i, cex = 1.2)
+  graphics::legend("topleft", c("independent (open)", "pooled (filled)", "1:1", "pop level"),
+                   col = c("black","black","grey60","grey70"), pch = c(1,19,NA,NA),
+                   lty = c(NA,NA,1,3), bty = "n")
+  # (b) partial-pooling signature: shrinkage vs track length
+  plot(days, shrink, pch = 19, col = col_i, cex = 1.3,
+       xlab = "track length (days)", ylab = "|shrinkage| = |indep - pooled| (km/day)",
+       main = "shrinkage decreases with track length")
+  if (length(unique(days)) > 2) {
+    fit_s <- stats::lowess(days, shrink); graphics::lines(fit_s, col = "grey40", lwd = 2)
+  }
   grDevices::dev.off()
   cat(sprintf("\nsaved %s\n", normalizePath(out_png)))
 } else if (isTRUE(cfg$compare)) {

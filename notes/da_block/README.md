@@ -127,6 +127,31 @@ short-deployment tags.
 
 Reproduce: `Rscript -e 'CFG <- list(benefit=TRUE, N=12L, days=7, sweeps=4000L); source("da_hier.R")'`
 
+### H4 — partial pooling with heterogeneous track lengths (`figures/h4_partial_pooling.png`)
+The richer, textbook regime. A panel of N=12 with track lengths spanning 3–21 days
+(`days` may be a per-individual vector in `simulate_panel()`), so per-track
+information — and therefore the right amount of shrinkage — varies across
+individuals.
+
+- **Short tracks (3–5 days):** independent `σ_i` estimates are wild (truth 47.5 →
+  6.5; truth 24.8 → 2.2). Pooling shrinks them hard toward the population →
+  **RMSE 63% lower**.
+- **Long tracks (14–21 days):** independent estimates are already good (truth
+  50.2 → 50.5; truth 70.8 → 68.9 — light *does* identify movement scale given
+  enough data). Pooling barely touches them; where it does it slightly
+  over-shrinks → **RMSE 34% worse**.
+- **Net: 45% lower RMSE**, driven entirely by the short tracks. Mean `|shrinkage|`
+  is 21 km/day (short) vs 8 (long) — the shrinkage **decreases monotonically with
+  track length** (right panel), which is the defining signature of partial
+  pooling: the model borrows strength adaptively, heavily where data is weak and
+  hardly at all where it is strong.
+
+This also refutes the earlier "~65% GLS bias" worry: that was a *weak-data*
+effect. Long-track independent estimates are near-unbiased, so pooling correctly
+leaves them alone.
+
+Reproduce: `Rscript -e 'CFG <- list(benefit=TRUE, N=12L, days=c(3,3,5,5,7,7,10,10,14,14,21,21), sweeps=4000L); source("da_hier.R")'`
+
 ## The exactness invariant (do not break when extending)
 
 The block correction is valid **only** because the block is drawn from the *same*
@@ -164,9 +189,6 @@ Rscript -e 'CFG <- list(dataset="sim_equinox", surrogate="coarse_hmm", coarse_re
 
 ## Next
 
-- Richer **partial-pooling** regime (longer or heterogeneous track lengths), where
-  well-identified individuals stay near their data while noisy ones shrink — a
-  more nuanced picture than the near-complete pooling of the short-track panel.
 - The genuinely-bimodal **equinox** case within the hierarchy (M4 machinery + the
   multimodal fallback), if any panel member crosses the equator near equinox.
 - Port the validated kernel to the compiled engine if the wall-clock (not just

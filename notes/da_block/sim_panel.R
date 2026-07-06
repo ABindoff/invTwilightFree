@@ -17,19 +17,17 @@ simulate_panel <- function(N = 6, days = 14, step_min = 10,
                            lat0_range = c(-52, -40), lon0_range = c(135, 150),
                            noise_prob = 0.05, seed = 20240501) {
   set.seed(seed)
-  n_obs <- days * 24 * (60 / step_min)
-  times <- seq(as.POSIXct(start_date, tz = "UTC"), by = paste(step_min, "mins"), length.out = n_obs)
-  ut <- as.numeric(times)
+  days_i <- if (length(days) == 1L) rep(days, N) else days   # per-individual track length
+  stopifnot(length(days_i) == N)
   dt_day <- step_min / (60 * 24)                 # obs interval in days
-
+  km_lat <- 111.0
   # per-individual daily movement sd (km/day), heterogeneous around the pop level
   sd_day_i <- pop_km_per_day * exp(rnorm(N, 0, 0.35))
-  # per-OBS-step km sd; km/deg for local metric
-  km_lat <- 111.0
   ind <- vector("list", N)
   for (i in seq_len(N)) {
-    lat0 <- runif(1, lat0_range[1], lat0_range[2])
-    lon0 <- runif(1, lon0_range[1], lon0_range[2])
+    n_obs <- round(days_i[i] * 24 * (60 / step_min))
+    times <- seq(as.POSIXct(start_date, tz = "UTC"), by = paste(step_min, "mins"), length.out = n_obs)
+    lat0 <- runif(1, lat0_range[1], lat0_range[2]); lon0 <- runif(1, lon0_range[1], lon0_range[2])
     km_lon <- 111.0 * cos(lat0 * pi / 180)
     step_sd_km <- sd_day_i[i] * sqrt(dt_day)     # per-obs-step km sd
     lat <- numeric(n_obs); lon <- numeric(n_obs); lat[1] <- lat0; lon[1] <- lon0
@@ -43,7 +41,7 @@ simulate_panel <- function(N = 6, days = 14, step_min = 10,
     light[isn] <- pmax(0, light[isn] - runif(sum(isn), 10, 40))
     ind[[i]] <- data.frame(time = times, light = light, true_lat = lat, true_lon = lon)
   }
-  list(ind = ind, sd_day_true = sd_day_i, pop_km_per_day = pop_km_per_day,
+  list(ind = ind, sd_day_true = sd_day_i, pop_km_per_day = pop_km_per_day, days = days_i,
        start = data.frame(lat = sapply(ind, function(d) d$true_lat[1]),
                           lon = sapply(ind, function(d) d$true_lon[1])))
 }
