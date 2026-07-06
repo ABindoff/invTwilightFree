@@ -55,17 +55,31 @@ fn solar_zenith(unix_time: &[f64], lon: &[f64], lat: &[f64]) -> Vec<f64> {
     out
 }
 
-/// Asymmetric-exponential spike density for the spike-and-slab light model.
-/// obs <= expected: one-sided exponential (shading); obs > expected: penalised
-/// with twice the decay rate (sensor physics forbid observations brighter than
-/// the clear-sky maximum).
+/// Normalising constant of the asymmetric-exponential spike over the tag's
+/// support [0, max_light], given the expected (clamped) light `mu`. Without this
+/// the spike is improper and its mass depends on `mu`, which (because `mu`
+/// depends on latitude through the solar geometry) tilts the per-cell likelihood
+/// by latitude and biases the latitude posterior. Confirmed by SBC; see
+/// notes/topology/sbc_design.md.
 #[inline]
-fn spike_density(obs: f64, expected: f64, lambda: f64) -> f64 {
-    if obs <= expected {
+fn spike_normaliser(mu: f64, lambda: f64, max_light: f64) -> f64 {
+    let lo = 1.0 - (-lambda * mu).exp();                              // mass below mu
+    let hi = 0.5 * (1.0 - (-2.0 * lambda * (max_light - mu)).exp());  // mass above mu
+    (lo + hi).max(1e-12)
+}
+
+/// Asymmetric-exponential spike density for the spike-and-slab light model,
+/// normalised over [0, max_light]. obs <= expected: one-sided exponential
+/// (shading); obs > expected: penalised with twice the decay rate (sensor
+/// physics forbid observations brighter than the clear-sky maximum).
+#[inline]
+fn spike_density(obs: f64, expected: f64, lambda: f64, max_light: f64) -> f64 {
+    let raw = if obs <= expected {
         lambda * (-lambda * (expected - obs)).exp()
     } else {
         lambda * (-lambda * 2.0 * (obs - expected)).exp()
-    }
+    };
+    raw / spike_normaliser(expected, lambda, max_light)
 }
 
 /// Calculate the log-likelihood of observed light given proposed tracks.
@@ -94,7 +108,7 @@ fn light_log_likelihood(
         let obs = obs_light[i];
         let exp = expected_light[i];
         
-        let spike = spike_density(obs, exp, lambda);
+        let spike = spike_density(obs, exp, lambda, max_light);
 
         // Mixture model: (1 - pi) * True Light + pi * False Light
         let marginal_density = (1.0 - prob_slab) * spike + prob_slab * slab_density;
@@ -420,7 +434,7 @@ fn run_particle_filter(
                 let zenith = zenith_from_ephem(eph_sd[j], eph_cd[j], eph_ra[j], eph_gmst[j], p_lon, p_lat);
                 let expected = (intercept - slope * zenith).max(0.0).min(max_light);
                 let obs = obs_light[j];
-                let spike = spike_density(obs, expected, lambda);
+                let spike = spike_density(obs, expected, lambda, max_light);
                 let current_prob_slab = particles[i].prob_slab;
                 let den = (1.0 - current_prob_slab) * spike + current_prob_slab * slab_density;
                 log_lik += den.ln();
@@ -702,7 +716,7 @@ fn run_particle_filter(
             
             let exp = (intercept - slope * z).max(0.0).min(max_light);
             let obs = obs_light[j];
-            let spike = spike_density(obs, exp, lambda);
+            let spike = spike_density(obs, exp, lambda, max_light);
             let den = (1.0 - current_prob_slab) * spike + current_prob_slab * slab_density;
             let prob_f = (current_prob_slab * slab_density) / den;
             p_false += prob_f * w;
@@ -782,7 +796,7 @@ fn eval_logpk_grid(
             let zenith = zenith_from_ephem(sd, cd, ra, gmst, lon[i], lat[i]);
             let expected = (intercept - slope * zenith).max(0.0).min(max_light);
             let obs = obs_light[j];
-            let spike = spike_density(obs, expected, lambda);
+            let spike = spike_density(obs, expected, lambda, max_light);
             let den = (1.0 - prob_slab) * spike + prob_slab * slab_density;
             sum_logl += den.ln();
         }
@@ -855,7 +869,7 @@ fn run_grid_hmm(
                 let zenith = zenith_from_ephem(sd, cd, ra, gmst, lon[i], lat[i]);
                 let expected = (intercept - slope * zenith).max(0.0).min(max_light);
                 let obs = obs_light[j];
-                let spike = spike_density(obs, expected, lambda);
+                let spike = spike_density(obs, expected, lambda, max_light);
                 let den = (1.0 - prob_slab) * spike + prob_slab * slab_density;
                 sum_logl += den.ln();
             }
@@ -973,6 +987,29 @@ fn run_grid_hmm(
         }
     }
 
+    // Log marginal likelihood (model evidence): logsumexp of the final forward
+    // column. alpha is the unnormalised log forward probability (the k=0 entries
+    // already carry the uniform 1/(n*num_states) prior), so this is the log of
+    // the total probability of the observations under the model and any priors
+    // injected via aux_logl. Use it for model comparison, e.g. a hemisphere
+    // Bayes factor: run twice under opposite priors and difference the logZ.
+    let log_z = {
+        let last = &alpha[k_steps - 1];
+        let mut max_a = f64::NEG_INFINITY;
+        for &a in last.iter() {
+            if a > -1e29 && a > max_a { max_a = a; }
+        }
+        if max_a == f64::NEG_INFINITY {
+            f64::NEG_INFINITY
+        } else {
+            let mut s = 0.0;
+            for &a in last.iter() {
+                if a > -1e29 { s += (a - max_a).exp(); }
+            }
+            max_a + s.ln()
+        }
+    };
+
     let mut beta = vec![vec![-1e30; n * num_states]; k_steps];
     for i in 0..n {
         for s in 0..num_states {
@@ -1047,7 +1084,10 @@ fn run_grid_hmm(
     let mut best_lat = vec![0.0; k_steps];
     let mut best_lon = vec![0.0; k_steps];
     let mut knot_prob_state = vec![Vec::with_capacity(k_steps); num_states];
-    
+    // Per-knot posterior over cells (marginalised over states), row-major k*n + i.
+    // Exposed for uncertainty diagnostics and simulation-based calibration.
+    let mut posterior = vec![0.0; k_steps * n];
+
     for k in 0..k_steps {
         let mut max_gamma = -1e30;
         let mut sum_gamma_exp = 0.0;
@@ -1085,6 +1125,7 @@ fn run_grid_hmm(
                     if gamma[i * num_states + s] > -1e29 {
                         let w = (gamma[i * num_states + s] - log_denom).exp();
                         prob_states[s] += w;
+                        posterior[k * n + i] += w;        // marginal posterior of cell i at knot k
 
                         let g_state = gamma[i * num_states + s];
                         if g_state > best_g {
@@ -1123,7 +1164,10 @@ fn run_grid_hmm(
         time = knot_times,
         lat = best_lat,
         lon = best_lon,
-        prob_state = prob_state_list
+        prob_state = prob_state_list,
+        log_z = log_z,
+        posterior = posterior,
+        n_cells = n as i32
     )
 }
 
