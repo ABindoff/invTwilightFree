@@ -1235,10 +1235,18 @@ fn solve_ut(r: &[f64], y: &[f64], n: usize) -> Vec<f64> {  // R x = y (back)
     x
 }
 
+// Per-individual likelihood context. `aux` is an optional additive per-knot
+// location log-likelihood (sensor terms: priors, SST, masks, ...), evaluated by
+// nearest-cell lookup on a regular lon/lat grid shared by all of this tag's knots.
+// koff maps a global knot index to this tag's local knot (for aux indexing).
 struct Ctx<'a> {
     obs_start: &'a [i32], obs_len: &'a [i32],
     obs_light: &'a [f64], eph: &'a [(f64, f64, f64, f64)],
     intercept: f64, slope: f64, lambda: f64, max_light: f64, prob_slab: f64,
+    koff: usize,
+    aux: &'a [f64],       // this tag's K*ncell aux values (empty if no terms)
+    aux_lon0: f64, aux_dlon: f64, aux_ncol: usize,
+    aux_lat0: f64, aux_dlat: f64, aux_nrow: usize,
 }
 impl<'a> Ctx<'a> {
     #[inline]
@@ -1253,6 +1261,15 @@ impl<'a> Ctx<'a> {
             let expc = (self.intercept - self.slope*z).max(0.0).min(self.max_light);
             let spike = spike_density(self.obs_light[j], expc, self.lambda, self.max_light);
             ll += ((1.0 - self.prob_slab)*spike + self.prob_slab*slab).ln();
+        }
+        if !self.aux.is_empty() {
+            let li = (((lon - self.aux_lon0) / self.aux_dlon).round() as i64)
+                .clamp(0, self.aux_ncol as i64 - 1) as usize;
+            let lj = (((lat - self.aux_lat0) / self.aux_dlat).round() as i64)
+                .clamp(0, self.aux_nrow as i64 - 1) as usize;
+            let ncell = self.aux_ncol * self.aux_nrow;
+            let local = knot - self.koff;
+            ll += self.aux[local * ncell + lj * self.aux_ncol + li];
         }
         ll
     }
@@ -1409,6 +1426,7 @@ fn run_block_track(
         obs_start: knot_obs_start, obs_len: knot_obs_len, obs_light: &obs_light, eph: &eph,
         intercept: calibration[0], slope: calibration[1],
         lambda: likelihood_params[0], max_light: likelihood_params[1], prob_slab: likelihood_params[2],
+        koff: 0, aux: &[], aux_lon0: 0.0, aux_dlon: 1.0, aux_ncol: 0, aux_lat0: 0.0, aux_dlat: 1.0, aux_nrow: 0,
     };
     let informative: Vec<bool> = knot_obs_len.iter().map(|&n| n > 0).collect();
 
@@ -1474,6 +1492,10 @@ fn run_block_track(
 /// @param start_lat Per-individual fixed first-knot (deploy) latitude
 /// @param end_lon Per-individual fixed last-knot (retrieval) longitude; NaN = free
 /// @param end_lat Per-individual fixed last-knot (retrieval) latitude; NaN = free
+/// @param aux_flat Concatenated per-tag additive location log-likelihood (sensor
+///   terms), each tag a K*ncell block on its own regular lon/lat grid; empty for none
+/// @param aux_ncol,aux_nrow Per-tag aux grid dimensions (0 columns/rows = no terms)
+/// @param aux_lon0,aux_dlon,aux_lat0,aux_dlat Per-tag aux grid origin and spacing
 /// @param a_pop InvGamma shape for sig2_i
 /// @param g0 Gamma shape hyperprior for beta
 /// @param h0 Gamma rate hyperprior for beta
@@ -1496,6 +1518,8 @@ fn run_block_hier(
     surr_mu: Vec<f64>, surr_p: Vec<f64>, cinv: Vec<f64>,
     start_lon: Vec<f64>, start_lat: Vec<f64>,
     end_lon: Vec<f64>, end_lat: Vec<f64>,   // retrieval; NaN => last knot free
+    aux_flat: Vec<f64>, aux_ncol: &[i32], aux_nrow: &[i32],   // sensor terms (0 cells => none)
+    aux_lon0: Vec<f64>, aux_dlon: Vec<f64>, aux_lat0: Vec<f64>, aux_dlat: Vec<f64>,
     a_pop: f64, g0: f64, h0: f64,
     block_len: i32, sweeps: i32, burn: i32, thin: i32, polish: bool, seed: f64,
 ) -> List {
@@ -1517,11 +1541,23 @@ fn run_block_hier(
     let mut sig2 = vec![0.0f64; n];
     let cinv_i: Vec<[f64;4]> = (0..n).map(|i| [cinv[4*i], cinv[4*i+1], cinv[4*i+2], cinv[4*i+3]]).collect();
 
-    // build a Ctx per individual (borrows global obs arrays + per-individual cal/lp)
-    let ctxs: Vec<Ctx> = (0..n).map(|i| Ctx {
-        obs_start: knot_obs_start, obs_len: knot_obs_len, obs_light: &obs_light, eph: &eph,
-        intercept: cal[2*i], slope: cal[2*i+1],
-        lambda: lp[3*i], max_light: lp[3*i+1], prob_slab: lp[3*i+2],
+    // aux (sensor terms) offsets: aux_off[i] = sum_{j<i} K_j * ncell_j
+    let ancol: Vec<usize> = aux_ncol.iter().map(|&x| x as usize).collect();
+    let anrow: Vec<usize> = aux_nrow.iter().map(|&x| x as usize).collect();
+    let mut aux_off = vec![0usize; n];
+    for i in 1..n { aux_off[i] = aux_off[i-1] + ki[i-1] * ancol[i-1] * anrow[i-1]; }
+    // build a Ctx per individual (borrows global obs arrays + per-individual cal/lp/aux)
+    let ctxs: Vec<Ctx> = (0..n).map(|i| {
+        let ncell = ki[i] * ancol[i] * anrow[i];
+        let aslice: &[f64] = if ncell > 0 { &aux_flat[aux_off[i]..aux_off[i] + ncell] } else { &[] };
+        Ctx {
+            obs_start: knot_obs_start, obs_len: knot_obs_len, obs_light: &obs_light, eph: &eph,
+            intercept: cal[2*i], slope: cal[2*i+1],
+            lambda: lp[3*i], max_light: lp[3*i+1], prob_slab: lp[3*i+2],
+            koff: koff[i], aux: aslice,
+            aux_lon0: aux_lon0[i], aux_dlon: aux_dlon[i], aux_ncol: ancol[i],
+            aux_lat0: aux_lat0[i], aux_dlat: aux_dlat[i], aux_nrow: anrow[i],
+        }
     }).collect();
 
     let free_end: Vec<bool> = (0..n).map(|i| !end_lon[i].is_finite()).collect();

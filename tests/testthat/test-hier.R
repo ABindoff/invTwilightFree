@@ -58,3 +58,26 @@ test_that("TwilightFreeHier accepts a long data frame with an id column", {
   expect_s3_class(fit, "TwilightFreeHier")
   expect_equal(fit$movement$id, c("X", "Y"))
 })
+
+test_that("a hemisphere_prior term shifts the latitude posterior in its direction", {
+  skip_on_cran()
+  mk <- function(seed, lon0) {
+    set.seed(seed)
+    times <- seq(as.POSIXct("2024-09-20", tz = "UTC"), by = "10 min", length.out = 8 * 144)
+    lat <- cumsum(stats::rnorm(length(times), 0, 0.03))
+    lon <- lon0 + cumsum(stats::rnorm(length(times), 0, 0.03))
+    z <- solar_zenith(as.numeric(times), lon, lat)
+    data.frame(Date = times, Light = pmin(pmax(558.5 - 5.818 * z, 0), 64))
+  }
+  data <- list(T1 = mk(1, -30))
+  locs <- data.frame(id = "T1", deploy_lon = -30, deploy_lat = 0,
+                     retrieve_lon = NA, retrieve_lat = NA)
+  hemi <- function(side) location_term("hemi", source = hemisphere_prior(function(d) side),
+                                       rule = identity_rule())
+  common <- list(data = data, locations = locs, step_hours = 12, mesh_pad = 25, coarse_res = 3,
+                 surrogate_diffusion = 80, sweeps = 1500L, burn = 500L, thin = 3L, seed = 11L)
+  mlat <- function(fit) mean(fit$tracks$T1$lat)
+  lat_N <- mlat(do.call(TwilightFreeHier, c(common, list(terms = hemi("N")))))
+  lat_S <- mlat(do.call(TwilightFreeHier, c(common, list(terms = hemi("S")))))
+  expect_gt(lat_N, lat_S)     # 'N' prior pulls north of the 'S' prior
+})

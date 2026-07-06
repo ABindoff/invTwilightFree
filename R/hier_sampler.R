@@ -22,6 +22,12 @@
 #'   the first numeric non-time column, for \code{light}).
 #' @param id Name of the id column when \code{data} is a single long data frame
 #'   (default "id"). Ignored when \code{data} is a list.
+#' @param terms Optional sensor-fusion constraints (priors, masks, SST, ...), each
+#'   a \code{\link{location_term}}. Either a single term, a list of terms applied to
+#'   every tag (e.g. a shared \code{\link{hemisphere_prior}} or sea mask), or a
+#'   \code{function(id, df)} returning a per-tag list of terms (e.g. an SST term
+#'   built from a temperature column). Each term's additive log-likelihood is
+#'   evaluated on the surrogate mesh and added to the light likelihood.
 #' @param step_hours Knot spacing in hours (uniform across tags so the pooled
 #'   movement scale is in common units). Default 12.
 #' @param calibration Optional \code{c(intercept, slope)} applied to all tags; if
@@ -50,7 +56,7 @@
 #' @importFrom stats quantile lm coef rgamma sd
 #' @export
 TwilightFreeHier <- function(data, locations,
-                             columns = NULL, id = "id",
+                             columns = NULL, id = "id", terms = NULL,
                              step_hours = 12,
                              calibration = NULL, likelihood_params = NULL,
                              a_pop = 3, hyperprior = c(1e-3, 1e-3),
@@ -74,9 +80,10 @@ TwilightFreeHier <- function(data, locations,
     ok <- !is.na(tm) & !is.na(lt); tm <- tm[ok]; lt <- lt[ok]
     ord <- order(tm); tm <- tm[ord]; lt <- lt[ord]
     loc <- tags$loc[i, ]
+    tg <- .tfh_terms(terms, tags$ids[i], df)
     ind[[i]] <- .tfh_build_individual(tm, lt, loc, step_hours, calibration,
                                       likelihood_params, surrogate_diffusion,
-                                      mesh_pad, coarse_res, inflate)
+                                      mesh_pad, coarse_res, inflate, tg)
   }
 
   # ---- flatten to the global arrays the Rust kernel expects ----
@@ -85,6 +92,7 @@ TwilightFreeHier <- function(data, locations,
   fit <- run_block_hier(
     as.integer(n), fl$knots_per_ind, fl$kob_start, fl$kob_len, fl$obs_times, fl$obs_light,
     fl$cal, fl$lp, fl$smu, fl$sp, fl$cinv, fl$slon, fl$slat, fl$elon, fl$elat,
+    fl$aux_flat, fl$aux_ncol, fl$aux_nrow, fl$aux_lon0, fl$aux_dlon, fl$aux_lat0, fl$aux_dlat,
     a_pop, hyperprior[1], hyperprior[2], as.integer(block_len),
     as.integer(sweeps), as.integer(burn), as.integer(thin), isTRUE(polish),
     as.numeric(if (is.null(seed)) 0 else seed))
@@ -125,6 +133,21 @@ TwilightFreeHier <- function(data, locations,
   list(data = panel, loc = loc, ids = ids)
 }
 
+# ---- sensor terms resolution -------------------------------------------------
+# terms may be NULL, a single location_term, a list of them (shared across tags),
+# or a function(id, df) returning a per-tag list of location_term objects.
+.tfh_terms <- function(terms, id, df) {
+  if (is.null(terms)) return(list())
+  if (inherits(terms, "tf_term")) return(list(terms))
+  if (is.function(terms)) {
+    tg <- terms(id, df)
+    if (inherits(tg, "tf_term")) tg <- list(tg)
+    return(tg)
+  }
+  if (is.list(terms)) return(terms)
+  stop("`terms` must be NULL, a location_term, a list of them, or a function(id, df)")
+}
+
 # ---- column detection --------------------------------------------------------
 .tfh_cols <- function(df, columns) {
   tc <- if (!is.null(columns) && "time" %in% names(columns)) columns[["time"]] else {
@@ -146,7 +169,8 @@ TwilightFreeHier <- function(data, locations,
 
 # ---- per-tag setup + coarse-HMM surrogate ------------------------------------
 .tfh_build_individual <- function(tm, lt, loc, step_hours, calibration, likelihood_params,
-                                  surrogate_diffusion, mesh_pad, coarse_res, inflate) {
+                                  surrogate_diffusion, mesh_pad, coarse_res, inflate,
+                                  terms = list()) {
   ut <- as.numeric(tm)
   dlon <- loc$deploy_lon; dlat <- loc$deploy_lat
   # calibration / likelihood params (fixed or auto)
@@ -178,28 +202,33 @@ TwilightFreeHier <- function(data, locations,
   # movement metric (local km/deg at the deployment latitude)
   km_lat <- 111.0; km_lon <- 111.0 * cos(dlat * pi / 180)
   Cinv <- c(km_lon^2, 0, 0, km_lat^2)
-  # surrogate
+  # surrogate (+ sensor-term aux field on the same coarse mesh)
   sur <- .tfh_surrogate(kt, obin, ut, lsh, cal, lp, loc, mesh_pad, coarse_res,
-                        surrogate_diffusion, inflate, Cinv, hstep)
+                        surrogate_diffusion, inflate, Cinv, hstep, terms)
   list(K = K, kt = kt, ot = ut, ol = lsh, obin = obin, cal = cal, lp = lp,
        deploy = c(dlon, dlat), retrieve = c(loc$retrieve_lon, loc$retrieve_lat),
        Cinv = Cinv, sur = sur, tstep = hstep)
 }
 
 .tfh_surrogate <- function(kt, obin, ut, lsh, cal, lp, loc, mesh_pad, coarse_res,
-                           surrogate_diffusion, inflate, Cinv, hstep) {
+                           surrogate_diffusion, inflate, Cinv, hstep, terms = list()) {
   K <- length(kt)
   lons <- c(loc$deploy_lon, loc$retrieve_lon); lats <- c(loc$deploy_lat, loc$retrieve_lat)
   lons <- lons[is.finite(lons)]; lats <- lats[is.finite(lats)]
   clon <- seq(min(lons) - mesh_pad, max(lons) + mesh_pad, by = coarse_res)
   clat <- seq(min(lats) - mesh_pad, max(lats) + mesh_pad, by = coarse_res)
   cg <- expand.grid(lon = clon, lat = clat); n <- nrow(cg)
-  # emissions
+  # sensor-term aux on the coarse mesh (K x n; zeros when no terms)
+  aux <- build_aux_matrix(terms, cg$lon, cg$lat, kt)
+  # emissions = light + aux, so the surrogate proposal reflects sensor constraints
   E <- matrix(1 / n, K, n)
   for (k in seq_len(K)) {
-    j <- obin[[k]]; if (!length(j)) next
-    ll <- eval_logpk_grid(cg$lon, cg$lat, ut[j], lsh[j], cal, lp)
-    e <- exp(ll - max(ll)); E[k, ] <- e / sum(e)
+    j <- obin[[k]]
+    ll <- if (length(j)) eval_logpk_grid(cg$lon, cg$lat, ut[j], lsh[j], cal, lp) else numeric(n)
+    ll <- ll + aux[k, ]
+    m <- suppressWarnings(max(ll[is.finite(ll)]))
+    if (!is.finite(m)) next
+    e <- exp(ll - m); E[k, ] <- e / sum(e)
   }
   # RW transition from surrogate_diffusion (proposal only)
   dtd <- hstep / 86400; var_km <- surrogate_diffusion^2 * dtd
@@ -229,7 +258,11 @@ TwilightFreeHier <- function(data, locations,
       inflate + diag(1e-6, 2)
     mu[k, ] <- m; P[(4 * k - 3):(4 * k)] <- as.numeric(t(solve(S))); info[k] <- TRUE
   }
-  list(mu = mu, P = P, info = info)
+  has_aux <- length(terms) > 0
+  list(mu = mu, P = P, info = info,
+       aux = if (has_aux) aux else NULL,
+       ncol = length(clon), nrow = length(clat),
+       lon0 = clon[1], dlon = coarse_res, lat0 = clat[1], dlat = coarse_res)
 }
 
 # ---- flatten to global arrays ------------------------------------------------
@@ -240,6 +273,9 @@ TwilightFreeHier <- function(data, locations,
   kob_start <- integer(0); kob_len <- integer(0); smu <- numeric(0); sp <- numeric(0)
   cal <- numeric(0); lp <- numeric(0); cinv <- numeric(0)
   slon <- numeric(0); slat <- numeric(0); elon <- numeric(0); elat <- numeric(0)
+  aux_flat <- numeric(0)
+  aux_ncol <- integer(n); aux_nrow <- integer(n)
+  aux_lon0 <- numeric(n); aux_dlon <- numeric(n); aux_lat0 <- numeric(n); aux_dlat <- numeric(n)
   obs_off <- 0L
   for (i in seq_len(n)) {
     E <- ind[[i]]
@@ -254,13 +290,21 @@ TwilightFreeHier <- function(data, locations,
     cal <- c(cal, E$cal); lp <- c(lp, E$lp); cinv <- c(cinv, E$Cinv)
     slon <- c(slon, E$deploy[1]); slat <- c(slat, E$deploy[2])
     elon <- c(elon, E$retrieve[1]); elat <- c(elat, E$retrieve[2])
+    if (!is.null(E$sur$aux)) {
+      aux_flat <- c(aux_flat, as.numeric(t(E$sur$aux)))   # knot-major, cell within knot
+      aux_ncol[i] <- E$sur$ncol; aux_nrow[i] <- E$sur$nrow
+      aux_lon0[i] <- E$sur$lon0; aux_dlon[i] <- E$sur$dlon
+      aux_lat0[i] <- E$sur$lat0; aux_dlat[i] <- E$sur$dlat
+    }
     obs_off <- obs_off + length(E$ot)
   }
   # NA retrieval -> NaN so Rust treats the last knot as free
   elon[is.na(elon)] <- NaN; elat[is.na(elat)] <- NaN
   list(knots_per_ind = knots_per_ind, kob_start = as.integer(kob_start), kob_len = as.integer(kob_len),
        obs_times = obs_times, obs_light = obs_light, smu = smu, sp = sp, cal = cal, lp = lp,
-       cinv = cinv, slon = slon, slat = slat, elon = elon, elat = elat)
+       cinv = cinv, slon = slon, slat = slat, elon = elon, elat = elat,
+       aux_flat = aux_flat, aux_ncol = aux_ncol, aux_nrow = aux_nrow,
+       aux_lon0 = aux_lon0, aux_dlon = aux_dlon, aux_lat0 = aux_lat0, aux_dlat = aux_dlat)
 }
 
 # ---- assemble the result object ----------------------------------------------

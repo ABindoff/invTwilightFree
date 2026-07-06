@@ -9,6 +9,7 @@ TwilightFreeHier(
   locations,
   columns = NULL,
   id = "id",
+  terms = NULL,
   step_hours = 12,
   calibration = NULL,
   likelihood_params = NULL,
@@ -42,6 +43,13 @@ the first numeric non-time column, for \code{light}).}
 
 \item{id}{Name of the id column when \code{data} is a single long data frame
 (default "id"). Ignored when \code{data} is a list.}
+
+\item{terms}{Optional sensor-fusion constraints (priors, masks, SST, ...), each
+a \code{\link{location_term}}. Either a single term, a list of terms applied to
+every tag (e.g. a shared \code{\link{hemisphere_prior}} or sea mask), or a
+\code{function(id, df)} returning a per-tag list of terms (e.g. an SST term
+built from a temperature column). Each term's additive log-likelihood is
+evaluated on the surrogate mesh and added to the light likelihood.}
 
 \item{step_hours}{Knot spacing in hours (uniform across tags so the pooled
 movement scale is in common units). Default 12.}

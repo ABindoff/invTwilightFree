@@ -127,6 +127,10 @@ run_block_track <- function(knot_obs_start, knot_obs_len, obs_times, obs_light, 
 #' @param start_lat Per-individual fixed first-knot (deploy) latitude
 #' @param end_lon Per-individual fixed last-knot (retrieval) longitude; NaN = free
 #' @param end_lat Per-individual fixed last-knot (retrieval) latitude; NaN = free
+#' @param aux_flat Concatenated per-tag additive location log-likelihood (sensor
+#'   terms), each tag a K*ncell block on its own regular lon/lat grid; empty for none
+#' @param aux_ncol,aux_nrow Per-tag aux grid dimensions (0 columns/rows = no terms)
+#' @param aux_lon0,aux_dlon,aux_lat0,aux_dlat Per-tag aux grid origin and spacing
 #' @param a_pop InvGamma shape for sig2_i
 #' @param g0 Gamma shape hyperprior for beta
 #' @param h0 Gamma rate hyperprior for beta
@@ -140,6 +144,6 @@ run_block_track <- function(knot_obs_start, knot_obs_len, obs_times, obs_light, 
 #'   mean_lon/sd_lon/mean_lat/sd_lat (concatenated across individuals, same order
 #'   as knots_per_ind)
 #' @name run_block_hier
-run_block_hier <- function(n_ind, knots_per_ind, knot_obs_start, knot_obs_len, obs_times, obs_light, cal, lp, surr_mu, surr_p, cinv, start_lon, start_lat, end_lon, end_lat, a_pop, g0, h0, block_len, sweeps, burn, thin, polish, seed) .Call(wrap__run_block_hier, n_ind, knots_per_ind, knot_obs_start, knot_obs_len, obs_times, obs_light, cal, lp, surr_mu, surr_p, cinv, start_lon, start_lat, end_lon, end_lat, a_pop, g0, h0, block_len, sweeps, burn, thin, polish, seed)
+run_block_hier <- function(n_ind, knots_per_ind, knot_obs_start, knot_obs_len, obs_times, obs_light, cal, lp, surr_mu, surr_p, cinv, start_lon, start_lat, end_lon, end_lat, aux_flat, aux_ncol, aux_nrow, aux_lon0, aux_dlon, aux_lat0, aux_dlat, a_pop, g0, h0, block_len, sweeps, burn, thin, polish, seed) .Call(wrap__run_block_hier, n_ind, knots_per_ind, knot_obs_start, knot_obs_len, obs_times, obs_light, cal, lp, surr_mu, surr_p, cinv, start_lon, start_lat, end_lon, end_lat, aux_flat, aux_ncol, aux_nrow, aux_lon0, aux_dlon, aux_lat0, aux_dlat, a_pop, g0, h0, block_len, sweeps, burn, thin, polish, seed)
 
 # nolint end

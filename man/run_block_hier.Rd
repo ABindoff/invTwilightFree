@@ -20,6 +20,13 @@ run_block_hier(
   start_lat,
   end_lon,
   end_lat,
+  aux_flat,
+  aux_ncol,
+  aux_nrow,
+  aux_lon0,
+  aux_dlon,
+  aux_lat0,
+  aux_dlat,
   a_pop,
   g0,
   h0,
@@ -61,6 +68,13 @@ run_block_hier(
 \item{end_lon}{Per-individual fixed last-knot (retrieval) longitude; NaN = free}
 
 \item{end_lat}{Per-individual fixed last-knot (retrieval) latitude; NaN = free}
+
+\item{aux_flat}{Concatenated per-tag additive location log-likelihood (sensor
+terms), each tag a K*ncell block on its own regular lon/lat grid; empty for none}
+
+\item{aux_ncol, aux_nrow}{Per-tag aux grid dimensions (0 columns/rows = no terms)}
+
+\item{aux_lon0, aux_dlon, aux_lat0, aux_dlat}{Per-tag aux grid origin and spacing}
 
 \item{a_pop}{InvGamma shape for sig2_i}
 
