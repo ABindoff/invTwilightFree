@@ -1,0 +1,36 @@
+<svg viewBox="0 0 680 480" xmlns="http://www.w3.org/2000/svg" role="img" font-family="system-ui, sans-serif">
+<title>Grid-cell torus versus light geolocation as a circle-bundle over the time-torus</title>
+<desc>Left: grid cells map space onto a torus with a Z-squared lattice ambiguity resolved across module scales. Right: light geolocation reads position on a sphere from observations fibred over the time-torus, with circles of position as fibers, the track as a section, and the equinox as a Z-two pinch.</desc>
+<text x="30" y="30" font-size="14" fill="#1a1a1a">grid cells: space wraps onto a torus</text>
+<rect x="55" y="70" width="170" height="170" fill="none" stroke="#9aa0a6" stroke-width="1.5"/>
+<polyline points="135,64 143,70 135,76" fill="none" stroke="#4C6EF5" stroke-width="2"/>
+<polyline points="135,234 143,240 135,246" fill="none" stroke="#4C6EF5" stroke-width="2"/>
+<polyline points="49,156 55,150 61,156" fill="none" stroke="#4C6EF5" stroke-width="2"/>
+<polyline points="49,166 55,160 61,166" fill="none" stroke="#4C6EF5" stroke-width="2"/>
+<polyline points="219,156 225,150 231,156" fill="none" stroke="#4C6EF5" stroke-width="2"/>
+<polyline points="219,166 225,160 231,166" fill="none" stroke="#4C6EF5" stroke-width="2"/>
+<circle cx="90" cy="105" r="5" fill="#4C6EF5"/><circle cx="140" cy="105" r="5" fill="#4C6EF5"/><circle cx="190" cy="105" r="5" fill="#4C6EF5"/>
+<circle cx="90" cy="155" r="5" fill="#4C6EF5"/><circle cx="140" cy="155" r="5" fill="#4C6EF5"/><circle cx="190" cy="155" r="5" fill="#4C6EF5"/>
+<circle cx="90" cy="205" r="5" fill="#4C6EF5"/><circle cx="140" cy="205" r="5" fill="#4C6EF5"/><circle cx="190" cy="205" r="5" fill="#4C6EF5"/>
+<text x="140" y="266" font-size="13" text-anchor="middle" fill="#1a1a1a">T2 = R2 / lattice</text>
+<text x="140" y="286" font-size="12" text-anchor="middle" fill="#5a5a5a">ambiguity: Z2 lattice translations</text>
+<text x="140" y="304" font-size="12" text-anchor="middle" fill="#5a5a5a">resolved across module scales</text>
+<line x1="340" y1="58" x2="340" y2="320" stroke="#cccccc" stroke-width="1"/>
+<text x="360" y="30" font-size="14" fill="#1a1a1a">light geolocation: a circle-bundle over the clock</text>
+<polygon points="400,360 580,360 630,315 450,315" fill="none" stroke="#9aa0a6" stroke-width="1.5"/>
+<text x="515" y="380" font-size="12" text-anchor="middle" fill="#5a5a5a">time-torus base: day x year (known)</text>
+<line x1="470" y1="215" x2="470" y2="338" stroke="#E8893A" stroke-width="1" stroke-dasharray="2 2"/>
+<line x1="470" y1="194" x2="470" y2="216" stroke="#E8893A" stroke-width="3"/>
+<text x="470" y="183" font-size="11.5" text-anchor="middle" fill="#B5651D">equinox pinch (Z2)</text>
+<line x1="530" y1="230" x2="530" y2="332" stroke="#E8893A" stroke-width="1" stroke-dasharray="2 2"/>
+<ellipse cx="530" cy="200" rx="16" ry="30" fill="none" stroke="#E8893A" stroke-width="2"/>
+<line x1="595" y1="230" x2="595" y2="328" stroke="#E8893A" stroke-width="1" stroke-dasharray="2 2"/>
+<ellipse cx="595" cy="200" rx="16" ry="30" fill="none" stroke="#E8893A" stroke-width="2"/>
+<text x="600" y="158" font-size="11.5" text-anchor="middle" fill="#B5651D">circle of position (S2)</text>
+<path d="M470,205 C500,188 512,186 530,190 C555,197 576,205 595,210" fill="none" stroke="#1a1a1a" stroke-width="2.5"/>
+<circle cx="470" cy="205" r="3.5" fill="#1a1a1a"/><circle cx="530" cy="190" r="3.5" fill="#1a1a1a"/><circle cx="595" cy="210" r="3.5" fill="#1a1a1a"/>
+<text x="406" y="208" font-size="11.5" text-anchor="end" fill="#1a1a1a">section</text>
+<text x="406" y="222" font-size="11.5" text-anchor="end" fill="#5a5a5a">= track</text>
+<text x="30" y="438" font-size="12" fill="#5a5a5a">grid code: degenerate everywhere, fixed across scales</text>
+<text x="360" y="438" font-size="12" fill="#5a5a5a">light code: sharp except at the equinox pinch</text>
+</svg>
