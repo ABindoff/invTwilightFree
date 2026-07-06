@@ -123,8 +123,10 @@ run_block_track <- function(knot_obs_start, knot_obs_len, obs_times, obs_light, 
 #' @param surr_mu Per-knot surrogate mean (2 per knot)
 #' @param surr_p Per-knot surrogate 2x2 precision (4 per knot)
 #' @param cinv Per-individual movement shape precision Cinv (2x2), length 4*n_ind
-#' @param start_lon Per-individual fixed first-knot longitude
-#' @param start_lat Per-individual fixed first-knot latitude
+#' @param start_lon Per-individual fixed first-knot (deploy) longitude
+#' @param start_lat Per-individual fixed first-knot (deploy) latitude
+#' @param end_lon Per-individual fixed last-knot (retrieval) longitude; NaN = free
+#' @param end_lat Per-individual fixed last-knot (retrieval) latitude; NaN = free
 #' @param a_pop InvGamma shape for sig2_i
 #' @param g0 Gamma shape hyperprior for beta
 #' @param h0 Gamma rate hyperprior for beta
@@ -134,8 +136,10 @@ run_block_track <- function(knot_obs_start, knot_obs_len, obs_times, obs_light, 
 #' @param thin Thinning interval
 #' @param polish Whether to run the red-black polish each sweep
 #' @param seed RNG seed; 0 means entropy
-#' @return List with beta (kept draws) and sig2 (kept draws, n_kept*n_ind row-major)
+#' @return List with beta and sig2 (kept draws), plus per-knot track posterior
+#'   mean_lon/sd_lon/mean_lat/sd_lat (concatenated across individuals, same order
+#'   as knots_per_ind)
 #' @name run_block_hier
-run_block_hier <- function(n_ind, knots_per_ind, knot_obs_start, knot_obs_len, obs_times, obs_light, cal, lp, surr_mu, surr_p, cinv, start_lon, start_lat, a_pop, g0, h0, block_len, sweeps, burn, thin, polish, seed) .Call(wrap__run_block_hier, n_ind, knots_per_ind, knot_obs_start, knot_obs_len, obs_times, obs_light, cal, lp, surr_mu, surr_p, cinv, start_lon, start_lat, a_pop, g0, h0, block_len, sweeps, burn, thin, polish, seed)
+run_block_hier <- function(n_ind, knots_per_ind, knot_obs_start, knot_obs_len, obs_times, obs_light, cal, lp, surr_mu, surr_p, cinv, start_lon, start_lat, end_lon, end_lat, a_pop, g0, h0, block_len, sweeps, burn, thin, polish, seed) .Call(wrap__run_block_hier, n_ind, knots_per_ind, knot_obs_start, knot_obs_len, obs_times, obs_light, cal, lp, surr_mu, surr_p, cinv, start_lon, start_lat, end_lon, end_lat, a_pop, g0, h0, block_len, sweeps, burn, thin, polish, seed)
 
 # nolint end

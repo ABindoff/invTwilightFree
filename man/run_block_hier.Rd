@@ -18,6 +18,8 @@ run_block_hier(
   cinv,
   start_lon,
   start_lat,
+  end_lon,
+  end_lat,
   a_pop,
   g0,
   h0,
@@ -52,9 +54,13 @@ run_block_hier(
 
 \item{cinv}{Per-individual movement shape precision Cinv (2x2), length 4*n_ind}
 
-\item{start_lon}{Per-individual fixed first-knot longitude}
+\item{start_lon}{Per-individual fixed first-knot (deploy) longitude}
 
-\item{start_lat}{Per-individual fixed first-knot latitude}
+\item{start_lat}{Per-individual fixed first-knot (deploy) latitude}
+
+\item{end_lon}{Per-individual fixed last-knot (retrieval) longitude; NaN = free}
+
+\item{end_lat}{Per-individual fixed last-knot (retrieval) latitude; NaN = free}
 
 \item{a_pop}{InvGamma shape for sig2_i}
 
@@ -75,7 +81,9 @@ run_block_hier(
 \item{seed}{RNG seed; 0 means entropy}
 }
 \value{
-List with beta (kept draws) and sig2 (kept draws, n_kept*n_ind row-major)
+List with beta and sig2 (kept draws), plus per-knot track posterior
+  mean_lon/sd_lon/mean_lat/sd_lat (concatenated across individuals, same order
+  as knots_per_ind)
 }
 \description{
 Runs the whole Gibbs sweep natively: each individual's track is updated with

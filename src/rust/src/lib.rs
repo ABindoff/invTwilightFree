@@ -1345,10 +1345,12 @@ fn block_update(ctx: &Ctx, xlon: &mut [f64], xlat: &mut [f64], le: &mut [f64], k
 
 // One full sweep of a single track: interior blocks (with single-site fallback on
 // obs-free knots), single-site free endpoint, optional red-black polish.
+// free_end: update the last knot (single-site) when retrieval is unknown; when a
+// retrieval location is given the last knot is fixed and skipped.
 #[allow(clippy::too_many_arguments)]
 fn track_update(ctx: &Ctx, xlon: &mut [f64], xlat: &mut [f64], le: &mut [f64], koff: usize,
                 k: usize, surr_mu: &[f64], surr_p: &[f64], pm: &[f64; 4], block_len: usize,
-                polish: bool, rng: &mut StdRng, nrm: &Normal<f64>) -> (u64, u64) {
+                polish: bool, free_end: bool, rng: &mut StdRng, nrm: &Normal<f64>) -> (u64, u64) {
     let phase = (rng.gen::<u64>() % block_len as u64) as usize;
     let mut blk_max = if block_len > phase { block_len - phase } else { 1 };
     let (mut acc, mut att) = (0u64, 0u64);
@@ -1364,7 +1366,7 @@ fn track_update(ctx: &Ctx, xlon: &mut [f64], xlat: &mut [f64], le: &mut [f64], k
         if block_update(ctx, xlon, xlat, le, koff, l, r, surr_mu, surr_p, pm, rng, nrm) { acc += 1; }
         l = r + 1;
     }
-    single_site(ctx, xlon, xlat, le, koff, k - 1, k, pm, rng, nrm);
+    if free_end { single_site(ctx, xlon, xlat, le, koff, k - 1, k, pm, rng, nrm); }
     if polish { rb_polish(ctx, xlon, xlat, le, koff, k, pm, rng, nrm); }
     (acc, att)
 }
@@ -1431,7 +1433,7 @@ fn run_block_track(
     let _ = &informative;  // (informative == obs_len>0; track_update reads ctx.obs_len directly)
     for sweep in 0..sweeps {
         let (a, t) = track_update(&ctx, &mut xlon, &mut xlat, &mut le, 0, k,
-                                  &surr_mu, &surr_p, &pm, bl, polish, &mut rng, &nrm);
+                                  &surr_mu, &surr_p, &pm, bl, polish, true, &mut rng, &nrm);
         acc += a; att += t;
         if sweep >= burn && (sweep - burn) % thin == 0 {
             n_kept += 1;
@@ -1468,8 +1470,10 @@ fn run_block_track(
 /// @param surr_mu Per-knot surrogate mean (2 per knot)
 /// @param surr_p Per-knot surrogate 2x2 precision (4 per knot)
 /// @param cinv Per-individual movement shape precision Cinv (2x2), length 4*n_ind
-/// @param start_lon Per-individual fixed first-knot longitude
-/// @param start_lat Per-individual fixed first-knot latitude
+/// @param start_lon Per-individual fixed first-knot (deploy) longitude
+/// @param start_lat Per-individual fixed first-knot (deploy) latitude
+/// @param end_lon Per-individual fixed last-knot (retrieval) longitude; NaN = free
+/// @param end_lat Per-individual fixed last-knot (retrieval) latitude; NaN = free
 /// @param a_pop InvGamma shape for sig2_i
 /// @param g0 Gamma shape hyperprior for beta
 /// @param h0 Gamma rate hyperprior for beta
@@ -1479,7 +1483,9 @@ fn run_block_track(
 /// @param thin Thinning interval
 /// @param polish Whether to run the red-black polish each sweep
 /// @param seed RNG seed; 0 means entropy
-/// @return List with beta (kept draws) and sig2 (kept draws, n_kept*n_ind row-major)
+/// @return List with beta and sig2 (kept draws), plus per-knot track posterior
+///   mean_lon/sd_lon/mean_lat/sd_lat (concatenated across individuals, same order
+///   as knots_per_ind)
 /// @name run_block_hier
 #[extendr]
 fn run_block_hier(
@@ -1489,6 +1495,7 @@ fn run_block_hier(
     cal: Vec<f64>, lp: Vec<f64>,
     surr_mu: Vec<f64>, surr_p: Vec<f64>, cinv: Vec<f64>,
     start_lon: Vec<f64>, start_lat: Vec<f64>,
+    end_lon: Vec<f64>, end_lat: Vec<f64>,   // retrieval; NaN => last knot free
     a_pop: f64, g0: f64, h0: f64,
     block_len: i32, sweeps: i32, burn: i32, thin: i32, polish: bool, seed: f64,
 ) -> List {
@@ -1517,6 +1524,7 @@ fn run_block_hier(
         lambda: lp[3*i], max_light: lp[3*i+1], prob_slab: lp[3*i+2],
     }).collect();
 
+    let free_end: Vec<bool> = (0..n).map(|i| !end_lon[i].is_finite()).collect();
     for i in 0..n {
         let k = ki[i];
         let mut xl = vec![0.0; k]; let mut xt = vec![0.0; k];
@@ -1526,6 +1534,7 @@ fn run_block_hier(
             else { xl[t] = start_lon[i]; xt[t] = start_lat[i]; }
         }
         xl[0] = start_lon[i]; xt[0] = start_lat[i];
+        if !free_end[i] { xl[k-1] = end_lon[i]; xt[k-1] = end_lat[i]; }
         let lei: Vec<f64> = (0..k).map(|t| ctxs[i].emit(koff[i] + t, xl[t], xt[t])).collect();
         // data-driven sig2 start from initial increments
         let mut ss = 0.0;
@@ -1540,13 +1549,17 @@ fn run_block_hier(
     let nkeep = ((sweeps - burn + thin - 1) / thin).max(0) as usize;
     let mut beta_draws: Vec<f64> = Vec::with_capacity(nkeep);
     let mut sig2_draws: Vec<f64> = Vec::with_capacity(nkeep * n);
+    let total_knots: usize = ki.iter().sum();
+    let (mut tmlon, mut tm2lon) = (vec![0.0; total_knots], vec![0.0; total_knots]);
+    let (mut tmlat, mut tm2lat) = (vec![0.0; total_knots], vec![0.0; total_knots]);
+    let mut rec = 0usize;
 
     for sweep in 0..sweeps {
         for i in 0..n {
             let k = ki[i];
             let pm = [cinv_i[i][0]/sig2[i], cinv_i[i][1]/sig2[i], cinv_i[i][2]/sig2[i], cinv_i[i][3]/sig2[i]];
             track_update(&ctxs[i], &mut xlon[i], &mut xlat[i], &mut le[i], koff[i], k,
-                         &surr_mu, &surr_p, &pm, bl, polish, &mut rng, &nrm);
+                         &surr_mu, &surr_p, &pm, bl, polish, free_end[i], &mut rng, &nrm);
             // conjugate sig2_i | track ~ InvGamma(a_pop + (k-1), beta + 0.5 SS)
             let mut ss = 0.0;
             for t in 1..k { ss += quad2(&cinv_i[i], xlon[i][t]-xlon[i][t-1], xlat[i][t]-xlat[i][t-1]); }
@@ -1561,10 +1574,20 @@ fn run_block_hier(
         if sweep >= burn && (sweep - burn) % thin == 0 {
             beta_draws.push(beta);
             for i in 0..n { sig2_draws.push(sig2[i]); }
+            rec += 1; let inv = 1.0 / rec as f64;
+            for i in 0..n { for t in 0..ki[i] {
+                let gk = koff[i] + t;
+                let dl = xlon[i][t] - tmlon[gk]; tmlon[gk] += dl*inv; tm2lon[gk] += dl*(xlon[i][t] - tmlon[gk]);
+                let da = xlat[i][t] - tmlat[gk]; tmlat[gk] += da*inv; tm2lat[gk] += da*(xlat[i][t] - tmlat[gk]);
+            } }
         }
     }
     let nk = beta_draws.len() as i32;
-    list!(beta = beta_draws, sig2 = sig2_draws, n_kept = nk, n_ind = n_ind)
+    let den = if rec > 1 { (rec - 1) as f64 } else { 1.0 };
+    let sdlon: Vec<f64> = tm2lon.iter().map(|v| (v/den).sqrt()).collect();
+    let sdlat: Vec<f64> = tm2lat.iter().map(|v| (v/den).sqrt()).collect();
+    list!(beta = beta_draws, sig2 = sig2_draws, n_kept = nk, n_ind = n_ind,
+          mean_lon = tmlon, sd_lon = sdlon, mean_lat = tmlat, sd_lat = sdlat)
 }
 
 extendr_module! {
