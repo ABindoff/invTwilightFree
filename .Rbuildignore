@@ -25,3 +25,8 @@
 ^vignettes/comprehensive_benchmark\.html$
 ^scratch$
 ^data-raw$
+^notes$
+^build_vignettes_all\.R$
+^DSpark_paper\.pdf$
+^da_gibbs_geolocation\.zip$
+^sbc_.*\.png$

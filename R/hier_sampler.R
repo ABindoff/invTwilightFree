@@ -328,7 +328,7 @@ TwilightFreeHier <- function(data, locations,
     row.names = NULL, stringsAsFactors = FALSE)
   # per-tag track posteriors (global knot slices)
   koff <- cumsum(c(0, vapply(ind, function(E) E$K, integer(1))))
-  tracks <- setNames(vector("list", n), ids)
+  tracks <- stats::setNames(vector("list", n), ids)
   for (i in seq_len(n)) {
     gk <- (koff[i] + 1):koff[i + 1]
     tracks[[i]] <- data.frame(
