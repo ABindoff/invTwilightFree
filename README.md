@@ -27,9 +27,13 @@ model, in increasing order of scope:
   movement scale is pooled through a conjugate inverse-gamma / gamma population
   model, so short tracks borrow strength from the panel.
 
-The likelihood is a spike-and-slab model of the light curve. The slab absorbs
-shading and artificial light at night without preprocessing, which is what
-underlies the method's robustness under adverse conditions.
+The likelihood is a spike-and-slab model of the light curve. The spike is an
+asymmetric density around the light expected from solar geometry: its gentler
+lower tail tolerates *shading*, which can only reduce measured light. The slab is
+a flat component that absorbs gross false-light events unrelated to geometry, such
+as artificial light at night or sensor glitches. Together they let the method
+handle these anomalies without preprocessing, which is what underlies its
+robustness under adverse conditions.
 
 ## Performance
 
