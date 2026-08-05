@@ -71,7 +71,11 @@ deployment location.}
 proposal surrogate (exactness-neutral). Default 100.}
 
 \item{mesh_pad}{Degrees of padding around the deploy/retrieve box for the
-surrogate mesh (default 20; increase for wide-ranging animals).}
+surrogate mesh (default 20; increase for wide-ranging animals). Either a
+single value applied to both axes, or \code{c(lon_pad, lat_pad)} when the
+animal ranges much further in one direction than the other, as a
+central-place forager deployed and recovered at the same colony does. The
+latitude range is clamped to +/- 88 degrees.}
 
 \item{coarse_res}{Surrogate mesh resolution in degrees (default 1.5).}
 

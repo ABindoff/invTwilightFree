@@ -15,3 +15,9 @@ src/rust/target
 src/*.o
 src/*.dll
 .repro/
+# analysis working files (see analysis/nes_hierarchical_geolocation.Rmd)
+analysis/cache/
+analysis/output/
+analysis/*.html
+data-raw/nes/
+data/nes_untracked/

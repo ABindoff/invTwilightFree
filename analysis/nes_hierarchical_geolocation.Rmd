@@ -1,0 +1,1413 @@
+---
+title: "Northern elephant seals: twilight-free geolocation with and without sensor fusion"
+subtitle: "Ten post-moult TDR Mk9 deployments validated against Argos"
+author: "Aidan D. Bindoff"
+date: "`r format(Sys.time(), '%Y-%m-%d %H:%M %Z')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    code_folding: show
+    df_print: paged
+    fig_width: 9
+    fig_height: 6
+params:
+  # ---- where the data live -------------------------------------------------
+  # A local copy of the co-author's Google Drive folder. These data are not
+  # publicly shareable: the directory is gitignored and .Rbuildignored.
+  data_dir:   "data/nes_untracked"
+  cache_dir:  "analysis/cache/nes"
+  out_dir:    "analysis/output/nes"
+
+  # ---- ingest --------------------------------------------------------------
+  decimate_minutes:   30      # the archives are 4-second; thin to this window (see 3.3)
+  surface_depth_m:     5      # at or above this depth a temperature reading is "surface"
+  clock_search_min:  120      # half-width of the clock offset search, minutes
+  clock_max_accept_min: 60    # reject an estimate above this: it is at the search bound
+  estimate_clock:   TRUE      # estimate the per-tag clock offset from the known endpoints
+  apply_clock_correction: TRUE    # ...and shift the timestamps by it (see 3.7)
+  clock_hires_minutes: 1      # resolution of the light used for the clock (see 3.7)
+  clock_window_days:   3      # days of light around each known fix
+
+  # ---- ground truth --------------------------------------------------------
+  argos_keep_lc: "3,2,1,0,A,B"
+  argos_vmax_kmh:     10      # sustained NES travel is 3-4 km/h
+  argos_max_gap_h:    24      # do not interpolate truth across longer gaps
+
+  # ---- models --------------------------------------------------------------
+  step_hours:         12
+  seed:               42
+  # hierarchical
+  sweeps:           4000
+  burn:             1500
+  thin:                5
+  mesh_pad_lon:       74      # deploy is a single point, so padding sets the mesh
+  mesh_pad_lat:       26
+  coarse_res:          2
+  surrogate_diffusion: 110    # km/sqrt(day), proposal only
+  # grid HMM
+  grid_cell_deg:       1
+  grid_diffusion:    110
+  # FFBS
+  ffbs_n:              3
+  ffbs_particles:   1000
+
+  # ---- sensor-fusion terms -------------------------------------------------
+  use_sst:         FALSE      # Mk9 temperature as an SST proxy; see 3.6 for why not
+  sst_depth_band: "2,10"      # m; the band in which the thermistor tracks SST
+  sst_sd:            1.5      # student_rule scale, deg C
+  sst_df:              4
+  bathy_margin_m:    300      # subtract from the knot's deepest dive before constraining
+  bathy_sd:          300      # soft floor_rule tolerance
+  soft_mask_penalty: -20
+
+  # ---- environmental layers ------------------------------------------------
+  fetch_env:        TRUE
+  bathy_stride:        4      # ETOPO1 is 1 arc-min; 4 gives ~7 km
+
+  # ---- limits (set for a fast smoke test) ----------------------------------
+  # `null`, not NA: YAML turns a bare NA into the *string* "NA", which passes
+  # is.na() and silently corrupts head()/min() downstream.
+  max_tags:         null
+  max_days:         null
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = TRUE, warning = TRUE,
+                      collapse = FALSE, comment = "#>", dpi = 110)
+options(stringsAsFactors = FALSE, width = 115)
+Sys.setlocale("LC_TIME", "C")   # the archives use "21:02:00 22-May-2021"
+set.seed(params$seed)
+```
+
+# What this document does
+
+Ten female northern elephant seals (*Mirounga angustirostris*) were tagged at
+Ano Nuevo in May-June 2021 with a Wildlife Computers **Mk9** archival TDR
+(4-second light, depth and external temperature) and a **SPOT** Argos
+transmitter, and recovered after post-moult foraging trips of 137 to 248 days.
+The Argos track is independent of the light record, so it is ground truth for a
+light-only reconstruction.
+
+The document reconstructs each track from **raw light alone** and from **light
+plus the tag's own auxiliary channels**, in three engines, and scores every
+reconstruction against Argos. It answers four questions.
+
+1. How accurate is `invTwilightFree` on real, dive-wrecked light data?
+2. What does sensor fusion add? The tag's depth channel constrains position
+   through bathymetry; its temperature channel constrains position through sea
+   surface temperature. Both are free, in the sense that they are already on the
+   tag.
+3. **Does sensor fusion make the fit faster?** It should, and section 8 measures
+   it. A bathymetric map rules out a candidate location *outright* once the
+   animal has dived past that seabed, and an outright exclusion is cheaper than
+   an improbability: the engine can skip the light likelihood there entirely.
+   That is only true of a **hard** constraint; a soft one still has to be
+   evaluated everywhere. Both are run, and the difference is the point.
+4. Does correcting the tag clock help? Longitude error is clock error, and these
+   deployments run for eight months.
+
+## The batches
+
+| Key | Engine | Terms | Tags | Clock |
+|---|---|---|---|---|
+| `hier_light` | `TwilightFreeHier` | none | all | corrected |
+| `hier_fusion` | `TwilightFreeHier` | soft bathy + SST + soft mask | all | corrected |
+| `hier_light_raw` | `TwilightFreeHier` | none | all | **uncorrected** |
+| `grid_light` | `TwilightFreeGrid` | none | all | corrected |
+| `grid_fusion` | `TwilightFreeGrid` | **hard** bathy + hard mask + SST | all | corrected |
+| `ffbs_light` | `TwilightFreeSMC("ffbs")` | none | subset | corrected |
+| `ffbs_fusion` | `TwilightFreeSMC("ffbs")` | soft bathy + SST | subset | corrected |
+
+`hier_light` and `hier_light_raw` differ only in whether the clock correction of
+section 3.7 was applied, which turns "does clock calibration help?" into a
+measurement rather than an opinion.
+
+## Longitude convention
+
+Two seals (PTT 214397 and 214402) cross the antimeridian. **Everything here uses
+0-360 degrees east**, so those tracks stay contiguous and no great-circle step is
+corrupted by a 360-degree wrap. Ano Nuevo is therefore 237.67, not -122.33. Both
+environmental products are fetched from their native 0-360 ERDDAP datasets
+(`ncdcOisst21Agg`, `etopo360`), so nothing is reprojected anywhere.
+
+# Environment and provenance
+
+```{r env-check}
+need <- c("invTwilightFree", "terra", "data.table", "ncdf4", "xml2")
+missing <- need[!vapply(need, requireNamespace, logical(1), quietly = TRUE)]
+if (length(missing)) stop("missing packages: ", paste(missing, collapse = ", "))
+suppressPackageStartupMessages({ library(invTwilightFree); library(terra); library(data.table) })
+
+cat("R               :", R.version.string, "\n")
+for (p in need) cat(sprintf("%-16s: %s\n", p, as.character(packageVersion(p))))
+dir.create(params$cache_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(params$out_dir,   recursive = TRUE, showWarnings = FALSE)
+if (!dir.exists(params$data_dir)) stop("params$data_dir not found: ", params$data_dir)
+```
+
+```{r manifest}
+# Every file that feeds the analysis, hashed, so the results are tied to bytes
+# rather than to a folder name that might be re-synced later.
+data_files <- list.files(params$data_dir, recursive = TRUE, full.names = TRUE)
+manifest <- data.frame(
+  path  = sub(paste0("^", normalizePath(params$data_dir, winslash = "/"), "/?"), "",
+              normalizePath(data_files, winslash = "/")),
+  bytes = file.size(data_files),
+  md5   = unname(tools::md5sum(data_files)), row.names = NULL)
+write.csv(manifest, file.path(params$out_dir, "data_manifest.csv"), row.names = FALSE)
+cat(nrow(manifest), "files,", sprintf("%.2f GB\n", sum(manifest$bytes) / 1024^3))
+head(manifest[order(-manifest$bytes), ], 8)
+```
+
+# Helpers
+
+Everything beyond `invTwilightFree`, `terra`, `data.table`, `ncdf4` and `xml2`
+is defined here, so there are no hidden dependencies.
+
+```{r helpers}
+# ---- geometry ----------------------------------------------------------------
+lon360 <- function(x) (x %% 360 + 360) %% 360
+
+gc_dist_km <- function(lon1, lat1, lon2, lat2, R = 6371.0088) {
+  d2r <- pi / 180
+  a <- sin((lat2 - lat1) * d2r / 2)^2 +
+       cos(lat1 * d2r) * cos(lat2 * d2r) * sin((lon2 - lon1) * d2r / 2)^2
+  2 * R * asin(pmin(1, sqrt(a)))
+}
+
+# Signed longitude difference, shortest way round. Needed for bias and RMSE in
+# longitude: a raw subtraction across the dateline reads as 360 degrees of error.
+dlon <- function(a, b) ((a - b + 180) %% 360) - 180
+
+# ---- io ----------------------------------------------------------------------
+# The archives use "%H:%M:%S %d-%b-%Y"; LC_TIME is forced to C in setup so %b
+# parses regardless of the machine's locale.
+parse_wc_time <- function(x) as.POSIXct(x, format = "%H:%M:%S %d-%b-%Y", tz = "UTC")
+
+# Minimal xlsx reader: an xlsx is a zip of XML, and readxl segfaults in this R
+# build. Returns a character matrix of the used range of one worksheet.
+read_xlsx_grid <- function(path, sheet = 1L) {
+  ns <- c(d = "http://schemas.openxmlformats.org/spreadsheetml/2006/main")
+  tmp <- file.path(tempdir(), "xlsx"); unlink(tmp, recursive = TRUE)
+  utils::unzip(path, exdir = tmp)
+  ss <- character(0)
+  sfile <- file.path(tmp, "xl", "sharedStrings.xml")
+  if (file.exists(sfile)) {
+    ss <- vapply(xml2::xml_find_all(xml2::read_xml(sfile), "d:si", ns),
+                 function(si) paste0(xml2::xml_text(xml2::xml_find_all(si, ".//d:t", ns)),
+                                     collapse = ""), "")
+  }
+  ws <- xml2::read_xml(file.path(tmp, "xl", "worksheets", sprintf("sheet%d.xml", sheet)))
+  rows <- xml2::xml_find_all(ws, "//d:row", ns)
+  cell_col <- function(ref) {                       # "BC12" -> 55
+    L <- utf8ToInt(toupper(gsub("[0-9]", "", ref))) - 64L
+    sum(L * 26^rev(seq_along(L) - 1))
+  }
+  parsed <- Filter(Negate(is.null), lapply(rows, function(r) {
+    cs <- xml2::xml_find_all(r, "d:c", ns)
+    if (!length(cs)) return(NULL)
+    list(idx = vapply(xml2::xml_attr(cs, "r"), cell_col, 1),
+         val = vapply(seq_along(cs), function(i) {
+           cc <- cs[[i]]; ty <- xml2::xml_attr(cc, "t")
+           v <- xml2::xml_find_first(cc, "d:v", ns)
+           if (is.na(v)) {
+             is_el <- xml2::xml_find_first(cc, "d:is", ns)
+             if (is.na(is_el)) "" else xml2::xml_text(is_el)
+           } else if (identical(ty, "s")) ss[as.integer(xml2::xml_text(v)) + 1L]
+           else xml2::xml_text(v)
+         }, ""))
+  }))
+  ncol <- max(unlist(lapply(parsed, function(p) p$idx)))
+  out <- matrix("", nrow = length(parsed), ncol = ncol)
+  for (i in seq_along(parsed)) out[i, parsed[[i]]$idx] <- parsed[[i]]$val
+  out
+}
+
+# ---- misc --------------------------------------------------------------------
+# Thin a 4-second dive record to one row per `minutes`, taking from each window
+# the quantities the model actually needs (see 3.3 for why this is not a
+# subsample):
+#   light      max, i.e. the least-attenuated sample in the window
+#   depth_max  deepest point, which is what the bathymetry floor constrains
+#   depth_min  shallowest point, which says whether the animal surfaced at all
+#   temp_surf  temperature at the shallowest record, the most SST-like reading
+decimate_dive <- function(d, minutes) {
+  d[, .b := floor(as.numeric(time) / (minutes * 60))]
+  out <- d[, {
+    i <- which.min(depth)
+    .(time = time[1],
+      light = as.numeric(max(light, na.rm = TRUE)),
+      depth_max = as.numeric(max(depth, na.rm = TRUE)),
+      depth_min = as.numeric(min(depth, na.rm = TRUE)),
+      temp_surf = if (length(i)) as.numeric(temp[i]) else NA_real_)
+  }, by = .b]
+  out[, .b := NULL]
+  as.data.frame(out[is.finite(light)])
+}
+
+# Linear interpolation of an Argos track to arbitrary times, along the shortest
+# arc in longitude. Used both for the SST validation and for scoring.
+interp_argos_xy <- function(a, times, max_gap_h = 24) {
+  at <- as.numeric(a$time); qt <- as.numeric(times)
+  j <- findInterval(qt, at); ok <- j >= 1 & j < length(at)
+  lo <- la <- rep(NA_real_, length(qt)); jj <- j[ok]
+  good <- (at[jj + 1] - at[jj]) / 3600 <= max_gap_h
+  w <- (qt[ok] - at[jj]) / (at[jj + 1] - at[jj]); idx <- which(ok)[good]
+  lo[idx] <- lon360(a$lon[jj[good]] + w[good] * dlon(a$lon[jj[good] + 1], a$lon[jj[good]]))
+  la[idx] <- a$lat[jj[good]] + w[good] * (a$lat[jj[good] + 1] - a$lat[jj[good]])
+  list(lon = lo, lat = la)
+}
+
+timed <- function(expr) {
+  t0 <- proc.time()[["elapsed"]]
+  val <- force(expr)
+  list(value = val, seconds = proc.time()[["elapsed"]] - t0)
+}
+
+# Cache a plain-R result (never a terra object: those are external pointers).
+# NB: never write return() inside the expression. It is forced as a promise
+# inside cache_rds(), so a return() there unwinds the wrong frame and the
+# assignment silently never happens.
+cache_rds <- function(key, expr, dir = params$cache_dir, refresh = FALSE) {
+  f <- file.path(dir, paste0(key, ".rds"))
+  if (!refresh && file.exists(f)) { message("cache hit: ", key); return(readRDS(f)) }
+  val <- force(expr); saveRDS(val, f); val
+}
+```
+
+# Ingest and quality control
+
+## The deployment table
+
+The spreadsheet is the authoritative crosswalk between the three identifiers
+that appear in the data: the TOPP id (which names the archive file), the Mk9
+serial (which also names the archive file) and the Argos PTT (which names the
+Argos folder). Dates are Excel serials.
+
+```{r meta}
+xlsx <- list.files(params$data_dir, pattern = "\\.xlsx$", full.names = TRUE)[1]
+g <- read_xlsx_grid(xlsx)
+tbl <- as.data.frame(g[-(1:2), , drop = FALSE], stringsAsFactors = FALSE)
+names(tbl) <- make.names(g[2, ], unique = TRUE)     # row 1 is a merged banner
+
+meta <- data.frame(
+  id      = tbl$TOPP.ID,
+  season  = tbl$Season,
+  seal    = tbl$Seal.ID,
+  age     = suppressWarnings(as.numeric(tbl$Deployment.Age)),
+  sex     = tbl$Sex,
+  ptt     = tbl$Sat.Tag.PTT,
+  tdr     = tbl$TDR..,
+  deploy_date  = as.Date(suppressWarnings(as.numeric(tbl$Date)),   origin = "1899-12-30"),
+  recover_date = as.Date(suppressWarnings(as.numeric(tbl$Date.1)), origin = "1899-12-30"),
+  stringsAsFactors = FALSE)
+meta <- meta[!is.na(meta$id) & nzchar(meta$id), ]
+meta$days <- as.numeric(meta$recover_date - meta$deploy_date)
+meta
+```
+
+## Archival records
+
+The Mk9 files are named `<TOPP id>_<Mk9 serial>.csv` and carry `Time`, `Depth`,
+`External Temp` and `Light Level` at a 4-second cadence: 3 to 5 million rows and
+130 to 240 MB per animal. One file in the folder (`2021030_19A1005.csv`, 1.5 GB)
+is a different instrument altogether, with `Wet/Dry`, accelerometry,
+conductivity and salinity but **no light channel**, so it cannot be geolocated
+by this method. It is dropped, with the reason recorded rather than silently
+skipped.
+
+```{r archive-list}
+LIGHT_COLS <- c("Time", "Depth", "External Temp", "Light Level")
+
+archive_paths <- list.files(params$data_dir, pattern = "^[0-9]+_.*\\.csv$", full.names = TRUE)
+archive_hdr <- lapply(archive_paths, function(f) names(fread(f, nrows = 0L)))
+has_light <- vapply(archive_hdr, function(h) all(LIGHT_COLS %in% h), logical(1))
+
+cat("archive files:", length(archive_paths), "\n")
+for (i in seq_along(archive_paths))
+  cat(sprintf("  %-26s %6.0f MB  %s\n", basename(archive_paths[i]),
+              file.size(archive_paths[i]) / 1024^2,
+              if (has_light[i]) "light+depth+temp" else
+                paste("DROPPED, no light channel; columns:",
+                      paste(utils::head(archive_hdr[[i]], 6), collapse = ","))))
+archive_paths <- archive_paths[has_light]
+```
+
+Thinning to `decimate_minutes` happens at read time, because the likelihood cost
+is linear in the number of observations. **How** it is thinned turns out to
+matter more than by how much, and getting it wrong is the single largest error
+available in this analysis, so it is justified rather than assumed.
+
+A northern elephant seal dives more or less continuously. An instantaneous light
+sample therefore records the animal's dive state, not the light environment: it
+is dark most of the time regardless of the sun. Subsampling the record, which is
+the obvious thing to do to a 4-second series, samples that dive state. Taking
+the **maximum** over a window instead returns the least-attenuated sample in it,
+which is the one taken nearest the surface, and that is the light envelope the
+solar-geometry model is about.
+
+The window has to be at least as long as a dive cycle, or some windows contain
+no surfacing at all. The chunk below measures the dive cycle from the data and
+scores each candidate rule by its correlation with the solar zenith angle
+computed at the animal's **known** position, which is the sharpest available
+test of whether a positional signal survives.
+
+```{r decimation-choice}
+COLONY_LON <- 237.67; COLONY_LAT <- 37.11   # Ano Nuevo, 0-360 convention
+probe <- fread(archive_paths[1], showProgress = FALSE,
+               select = c("Time", "Depth", "Light Level"))
+setnames(probe, c("time", "depth", "light"))
+probe[, time := parse_wc_time(time)]
+probe <- probe[!is.na(time) & !is.na(light)]
+# Mid-trip, where the animal is diving hardest. The reference zenith is computed
+# at the colony, so this is a lower bound on the achievable correlation: the
+# animal has moved, which can only weaken it.
+mid <- probe[time >= min(time) + 60 * 86400 & time < min(time) + 70 * 86400]
+
+gaps <- as.numeric(diff(mid[depth <= params$surface_depth_m, time]))
+gaps <- gaps[gaps > 60]
+cat(sprintf("surface time: %.1f%% of records | gap between surfacings (min): median %.1f, q99 %.1f\n",
+            100 * mean(mid$depth <= params$surface_depth_m), median(gaps) / 60,
+            quantile(gaps, .99) / 60))
+
+score_rule <- function(mins, fun, label) {
+  agg <- mid[, .(v = as.numeric(fun(light)), t = as.numeric(time[1])),
+             by = .(b = floor(as.numeric(time) / (mins * 60)))][is.finite(v)]
+  data.frame(rule = label, minutes = mins, n = nrow(agg),
+             cor_with_zenith = round(cor(agg$v, -solar_zenith(
+               agg$t, rep(COLONY_LON, nrow(agg)),
+               rep(COLONY_LAT, nrow(agg)))), 3))
+}
+rules <- do.call(rbind, c(
+  lapply(c(10, 30, 60), function(m) score_rule(m, function(v) v[1], "subsample (first)")),
+  lapply(c(5, 10, 20, 30, 60), function(m) score_rule(m, max, "maximum"))))
+print(rules, row.names = FALSE)
+```
+
+The maximum rule roughly doubles the correlation, and it plateaus once the
+window exceeds the dive cycle; a longer window buys nothing and costs temporal
+resolution. `decimate_minutes = 30` sits at that plateau. At a 12-hour knot
+spacing it still puts 24 observations in every knot, and it is objective and
+automatic, so it does not reintroduce the manual editing step the method exists
+to remove.
+
+```{r archives}
+archives <- cache_rds(sprintf("archives_%dmin", params$decimate_minutes), {
+  p <- archive_paths
+  if (!is.null(params$max_tags)) p <- utils::head(p, params$max_tags)
+  out <- lapply(p, function(f) {
+    message("reading ", basename(f))
+    d <- fread(f, select = LIGHT_COLS, showProgress = FALSE)
+    setnames(d, c("time", "depth", "temp", "light"))
+    d[, time := parse_wc_time(time)]
+    d <- d[!is.na(time) & !is.na(light)]
+    setorder(d, time)
+    d <- d[!duplicated(time)]
+    # Two products from the one expensive read: the working series, and a
+    # high-resolution slice around each endpoint for the clock estimate, which
+    # cannot resolve a twilight more finely than the sampling interval (3.7).
+    w <- params$clock_window_days * 86400
+    ends <- d[time <= min(time) + w | time >= max(time) - w]
+    list(main = decimate_dive(d, params$decimate_minutes),
+         ends = decimate_dive(ends, params$clock_hires_minutes))
+  })
+  names(out) <- sub("_.*$", "", basename(p))         # TOPP id
+  out
+})
+archive_ends <- lapply(archives, `[[`, "ends")
+archives     <- lapply(archives, `[[`, "main")
+
+archive_summary <- do.call(rbind, lapply(names(archives), function(id) {
+  d <- archives[[id]]
+  data.frame(id = id, n = nrow(d), start = min(d$time), end = max(d$time),
+             days = round(as.numeric(difftime(max(d$time), min(d$time), units = "days")), 1),
+             light_q05 = quantile(d$light, .05), light_q95 = quantile(d$light, .95),
+             light_max = max(d$light),
+             depth_med = round(median(d$depth_max, na.rm = TRUE)),
+             depth_max = round(max(d$depth_max, na.rm = TRUE)),
+             pct_windows_surfaced = round(100 * mean(d$depth_min <= params$surface_depth_m,
+                                                     na.rm = TRUE), 1),
+             row.names = NULL)
+}))
+archive_summary
+```
+
+`depth_med` is the headline number for how hostile these data are: the typical
+30-minute window reaches several hundred metres, where the light sensor sees
+almost nothing. `pct_windows_surfaced` is the reassurance that the decimation
+rule works: it is the percentage of windows in which the animal came within
+`surface_depth_m` of the surface at least once, and therefore the percentage for
+which the window maximum is a near-surface reading.
+
+## Argos
+
+Each PTT folder holds a Wildlife Computers data package. Two files matter:
+`-Locations.csv` (the track) and `-RTC.csv` (the SPOT tag's own clock-drift
+record, used as context in section 3.7).
+
+The `Locations` file has two kinds of row. `Type == "Argos"` rows are satellite
+fixes with a location class, and are the ground truth. `Type == "User"` rows are
+a single researcher-entered position per animal, 37.11 N 122.33 W, dated to the
+deployment day. **That is the deployment location** the metadata otherwise
+lacks. It is used to pin the first knot, and excluded from the ground-truth
+comparison, because it is an input rather than an independent observation.
+
+```{r argos-unpack}
+# The Argos packages arrive as a zip of per-PTT zips.
+zips <- list.files(params$data_dir, pattern = "^drive-download.*\\.zip$", full.names = TRUE)
+argos_dir <- file.path(params$data_dir, "argos")
+if (length(zips) && !dir.exists(argos_dir)) {
+  dir.create(argos_dir, showWarnings = FALSE)
+  utils::unzip(zips[1], exdir = argos_dir)
+  for (z in list.files(argos_dir, pattern = "\\.zip$", full.names = TRUE))
+    # One package (214393) has a corrupt MinMaxDepth entry we do not need, so
+    # this warns and continues rather than stopping.
+    suppressWarnings(try(utils::unzip(z, exdir = file.path(argos_dir, sub("\\.zip$", "", basename(z)))),
+                         silent = TRUE))
+}
+loc_files <- list.files(argos_dir, pattern = "-Locations\\.csv$", recursive = TRUE, full.names = TRUE)
+cat("Argos location files:", length(loc_files), "\n")
+```
+
+```{r argos-read}
+A <- rbindlist(lapply(loc_files, function(f)
+  fread(f, showProgress = FALSE, colClasses = list(character = c("Ptt", "Quality")))), fill = TRUE)
+A[, time := parse_wc_time(Date)]
+A[, lon := lon360(Longitude)][, lat := Latitude]
+
+deploy_fix <- A[Type == "User", .(deploy_lon = median(lon), deploy_lat = median(lat),
+                                  user_date = min(as.Date(time))), by = Ptt]
+cat("deployment fixes (Type == 'User'):\n"); print(deploy_fix)
+
+keep_lc <- trimws(strsplit(params$argos_keep_lc, ",")[[1]])
+A <- A[Type == "Argos" & Quality %in% keep_lc & !is.na(time) & !is.na(lon)]
+
+# Forward speed filter. Elephant seals sustain 3-4 km/h; a step implying more
+# than argos_vmax_kmh from the last accepted fix is a bad Argos solution rather
+# than a fast seal.
+speed_filter <- function(d, vmax) {
+  setorder(d, time)
+  if (nrow(d) < 3) return(d)
+  keep <- rep(TRUE, nrow(d)); last <- 1L
+  for (i in 2:nrow(d)) {
+    dt <- as.numeric(difftime(d$time[i], d$time[last], units = "hours"))
+    if (dt <= 0) { keep[i] <- FALSE; next }
+    if (gc_dist_km(d$lon[last], d$lat[last], d$lon[i], d$lat[i]) / dt > vmax) keep[i] <- FALSE
+    else last <- i
+  }
+  d[keep]
+}
+n_before <- nrow(A)
+argos <- lapply(split(A, A$Ptt), speed_filter, vmax = params$argos_vmax_kmh)
+cat(sprintf("speed filter removed %d of %d fixes (%.1f%%)\n",
+            n_before - sum(vapply(argos, nrow, 0L)), n_before,
+            100 * (1 - sum(vapply(argos, nrow, 0L)) / n_before)))
+
+argos_summary <- do.call(rbind, lapply(names(argos), function(p) {
+  d <- argos[[p]]
+  data.frame(ptt = p, n = nrow(d),
+             per_day = round(nrow(d) / as.numeric(difftime(max(d$time), min(d$time),
+                                                           units = "days")), 1),
+             lon_min = round(min(d$lon), 1), lon_max = round(max(d$lon), 1),
+             lat_min = round(min(d$lat), 1), lat_max = round(max(d$lat), 1), row.names = NULL)
+}))
+argos_summary
+```
+
+## Assembling the panel
+
+```{r tags}
+plaus <- as.numeric(strsplit(params$sst_plausible, ",")[[1]])
+
+build_tag <- function(id) {
+  m <- meta[match(id, meta$id), ]
+  if (is.na(m$ptt) || !m$ptt %in% names(argos)) return(NULL)
+  a <- argos[[m$ptt]]
+  d <- archives[[id]]
+  df <- deploy_fix[Ptt == m$ptt]
+  if (!nrow(df)) return(NULL)
+
+  # Window: the animal is at sea between the deployment day and the last Argos
+  # fix. The archive starts when the Mk9 was switched on, before the animal
+  # leaves the beach, so take the later of the two starts. The spreadsheet
+  # deployment date and the User fix disagree by a day or two on some animals,
+  # so take the later of those as well.
+  t0 <- max(min(d$time), as.POSIXct(max(m$deploy_date, df$user_date), tz = "UTC"))
+  t1 <- min(max(d$time), max(a$time))
+  if (!is.null(params$max_days)) t1 <- min(t1, t0 + params$max_days * 86400)
+  d <- d[d$time >= t0 & d$time <= t1, , drop = FALSE]
+  a <- a[a$time >= t0 & a$time <= t1]
+  if (nrow(d) < 1000 || nrow(a) < 50) return(NULL)
+
+  # Recovery: the animal hauls out back at the colony, so take the median of the
+  # good fixes in the last 72 h rather than trusting a single last fix.
+  tail_fix <- a[a$time >= max(a$time) - 72 * 3600]
+  list(id = id, ptt = m$ptt, seal = m$seal, light = d, argos = as.data.frame(a),
+       deploy  = c(lon = df$deploy_lon, lat = df$deploy_lat),
+       recover = c(lon = median(tail_fix$lon), lat = median(tail_fix$lat)),
+       t0 = t0, t1 = t1, days = as.numeric(difftime(t1, t0, units = "days")))
+}
+
+tags <- lapply(names(archives), build_tag)
+names(tags) <- names(archives)
+tags <- tags[!vapply(tags, is.null, logical(1))]
+stopifnot(length(tags) > 0)
+
+tag_table <- do.call(rbind, lapply(tags, function(g) data.frame(
+  id = g$id, seal = g$seal, ptt = g$ptt, days = round(g$days, 1),
+  n_light = nrow(g$light), n_argos = nrow(g$argos),
+  deploy_lon = round(g$deploy[["lon"]], 3), deploy_lat = round(g$deploy[["lat"]], 3),
+  recover_lon = round(g$recover[["lon"]], 3), recover_lat = round(g$recover[["lat"]], 3),
+  max_depth = round(max(g$light$depth_max, na.rm = TRUE)), row.names = NULL)))
+tag_table
+cat(sprintf("\npanel: %d tags, %.0f tag-days, %s light observations\n",
+            length(tags), sum(tag_table$days), format(sum(tag_table$n_light), big.mark = ",")))
+```
+
+## Clock offsets
+
+Longitude error is clock error: one minute is 0.25 degrees, roughly 20 km at
+45 N. Two independent lines of evidence are available.
+
+**The SPOT tags' own drift.** Each Argos package carries an `-RTC.csv` comparing
+the tag's clock with a known real time. These are the *SPOT* clocks, not the Mk9
+clocks, so they correct nothing here, but they show what a clock of this vintage
+does over an eight-month deployment, which is the prior for what the Mk9 is
+likely doing.
+
+**A light-based estimate.** `calibrate_clock_from_endpoints()` searches for the
+offset that maximises the light likelihood at the known deployment and recovery
+positions, both of which are known here.
+
+That estimate is run on **high-resolution light, not the working series.** A
+twilight cannot be located more precisely than the sampling interval, so the
+estimator's own uncertainty scales with the decimation. Measured on these ten
+deployments, the width of the 2-log-unit interval around the peak was 10.6
+minutes at 1-minute resolution, 23 at 5, 33 at 10 and 55 at 30. Estimating the
+clock from the 30-minute working series would therefore return an offset with a
++/- 27 minute uncertainty, which is +/- 7 degrees of longitude: worse than the
+error it is meant to remove. The `ends` slice built in section 3.3 exists for
+exactly this, and costs nothing extra because it comes out of the same read.
+
+```{r clock-estimate}
+clocks <- if (!isTRUE(params$estimate_clock)) NULL else cache_rds("clocks", {
+  lapply(tags, function(g) {
+    e <- archive_ends[[g$id]]
+    e <- e[e$time >= g$t0 & e$time <= g$t1, ]
+    tryCatch(calibrate_clock_from_endpoints(
+      date_time = e$time, light = e$light,
+      start_lon = g$deploy[["lon"]],  start_lat = g$deploy[["lat"]],
+      end_lon   = g$recover[["lon"]], end_lat   = g$recover[["lat"]],
+      calibration = NULL, likelihood_params = NULL,
+      window_days = params$clock_window_days,
+      search = params$clock_search_min * 60, by = 30),
+      error = function(e) { message("clock estimation failed for ", g$id, ": ",
+                                    conditionMessage(e)); NULL })
+  })
+})
+
+# An offset that lands on the edge of the search window is not an estimate, it
+# is a failure to find an interior optimum: the profile is flat or monotone and
+# the optimiser has simply run to the boundary. Applying one injects error
+# rather than removing it, so such tags keep their raw timestamps.
+clock_table <- NULL
+if (!is.null(clocks)) {
+  clock_table <- do.call(rbind, lapply(names(clocks), function(id) {
+    cl <- clocks[[id]]
+    if (is.null(cl)) return(data.frame(id = id, ptt = tags[[id]]$ptt,
+      offset_deploy_min = NA_real_, offset_recover_min = NA_real_,
+      drift_min_per_day = NA_real_, lon_bias_deg = NA_real_, accepted = FALSE))
+    od <- cl$offset_deploy / 60; orr <- cl$offset_retrieve / 60
+    days <- as.numeric(difftime(tags[[id]]$t1, tags[[id]]$t0, units = "days"))
+    data.frame(id = id, ptt = tags[[id]]$ptt,
+               offset_deploy_min = round(od, 2), offset_recover_min = round(orr, 2),
+               drift_min_per_day = round((orr - od) / days, 4),
+               lon_bias_deg = round(od * 0.25, 2),
+               accepted = max(abs(od), abs(orr)) <= params$clock_max_accept_min,
+               row.names = NULL)
+  }))
+  print(clock_table)
+  cat(sprintf("\n%d of %d estimates are interior to the +/- %.0f min search and accepted\n",
+              sum(clock_table$accepted), nrow(clock_table), params$clock_search_min))
+}
+```
+
+Even at 1-minute resolution the estimate is not free of doubt, so it is not
+taken on trust. `hier_light` and `hier_light_raw` are identical except for this
+correction, so section 7 measures whether it helped, against Argos, rather than
+asserting that it must have.
+
+```{r clock-apply}
+tags_raw <- tags                        # uncorrected copy, for hier_light_raw
+n_applied <- 0L
+if (isTRUE(params$apply_clock_correction) && !is.null(clocks)) {
+  for (id in names(tags)) {
+    cl <- clocks[[id]]
+    ok <- isTRUE(clock_table$accepted[match(id, clock_table$id)])
+    if (ok && !is.null(cl) && is.function(cl$correct)) {
+      tags[[id]]$light$time <- cl$correct(tags[[id]]$light$time)
+      n_applied <- n_applied + 1L
+    }
+  }
+}
+message("clock correction applied to ", n_applied, " of ", length(tags), " tags")
+```
+
+## Study domain
+
+```{r domain}
+all_lon <- unlist(lapply(tags, function(g) g$argos$lon))
+all_lat <- unlist(lapply(tags, function(g) g$argos$lat))
+bbox <- c(xmin = floor(min(all_lon)) - 8, xmax = ceiling(max(all_lon)) + 4,
+          ymin = floor(min(all_lat)) - 6, ymax = ceiling(max(all_lat)) + 8)
+bbox[["ymin"]] <- max(bbox[["ymin"]], -89); bbox[["ymax"]] <- min(bbox[["ymax"]], 89)
+
+date_rng  <- range(unlist(lapply(tags, function(g) c(g$t0, g$t1))))
+all_dates <- seq(as.Date(as.POSIXct(date_rng[1], origin = "1970-01-01", tz = "UTC")) - 1,
+                 as.Date(as.POSIXct(date_rng[2], origin = "1970-01-01", tz = "UTC")) + 1,
+                 by = "day")
+cat(sprintf("domain: lon %.0f..%.0f (0-360 E), lat %.0f..%.0f | %d days, %s to %s\n",
+            bbox[["xmin"]], bbox[["xmax"]], bbox[["ymin"]], bbox[["ymax"]],
+            length(all_dates), min(all_dates), max(all_dates)))
+cat(sprintf("westernmost %.1f E, easternmost %.1f E; the colony is at %.2f E\n",
+            min(all_lon), max(all_lon), tag_table$deploy_lon[1]))
+```
+
+# Environmental layers
+
+Fetched once for the whole domain from ERDDAP and cached as GeoTIFFs. Both are
+the native 0-360 variants, so nothing is reprojected or wrapped. `terra` objects
+are external pointers and do not survive `saveRDS()`, which is why these caches
+are rasters on disk, re-read on every knit.
+
+```{r erddap-helpers}
+erddap <- "https://coastwatch.pfeg.noaa.gov/erddap/griddap/"
+enc <- function(s) gsub("]", "%5D", gsub("[", "%5B", s, fixed = TRUE), fixed = TRUE)
+
+# Read a lon/lat(/time) ERDDAP NetCDF into a SpatRaster. ERDDAP latitude runs
+# south to north; raster rows run north to south, so rows are reversed.
+nc_to_rast <- function(path, var, has_time) {
+  nc <- ncdf4::nc_open(path); on.exit(ncdf4::nc_close(nc))
+  lon <- as.numeric(ncdf4::ncvar_get(nc, "longitude"))
+  lat <- as.numeric(ncdf4::ncvar_get(nc, "latitude"))
+  a   <- ncdf4::ncvar_get(nc, var, collapse_degen = TRUE)
+  tm  <- if (has_time) as.numeric(ncdf4::ncvar_get(nc, "time")) else 0
+  a   <- array(a, dim = c(length(lon), length(lat), length(tm)))
+  ext <- terra::ext(min(lon) - abs(diff(lon)[1]) / 2, max(lon) + abs(diff(lon)[1]) / 2,
+                    min(lat) - abs(diff(lat)[1]) / 2, max(lat) + abs(diff(lat)[1]) / 2)
+  st <- terra::rast(lapply(seq_along(tm), function(i) {
+    m <- t(a[, , i])
+    terra::rast(m[rev(seq_len(nrow(m))), , drop = FALSE], extent = ext, crs = "EPSG:4326")
+  }))
+  if (has_time) names(st) <- format(as.Date(as.POSIXct(tm, origin = "1970-01-01", tz = "UTC")))
+  st
+}
+```
+
+## Sea surface temperature (NOAA OISST v2.1, daily, 0.25 degree)
+
+```{r sst}
+sst_tif <- file.path(params$cache_dir, "oisst.tif")
+sst_dtf <- file.path(params$cache_dir, "oisst_dates.rds")
+
+if (!file.exists(sst_tif) && isTRUE(params$fetch_env)) {
+  chunks <- split(all_dates, ceiling(seq_along(all_dates) / 60))
+  st <- lapply(seq_along(chunks), function(i) {
+    ch <- chunks[[i]]
+    message(sprintf("OISST %d/%d: %s..%s", i, length(chunks), min(ch), max(ch)))
+    f <- file.path(tempdir(), sprintf("oisst_%02d.nc", i))
+    u <- sprintf(paste0("%sncdcOisst21Agg.nc?sst[(%sT12:00:00Z):1:(%sT12:00:00Z)]",
+                        "[(0.0):1:(0.0)][(%f):1:(%f)][(%f):1:(%f)]"),
+                 erddap, min(ch), max(ch), bbox[["ymin"]], bbox[["ymax"]],
+                 bbox[["xmin"]], bbox[["xmax"]])
+    utils::download.file(enc(u), f, mode = "wb", quiet = TRUE)
+    nc_to_rast(f, "sst", has_time = TRUE)
+  })
+  sst_stack <- do.call(c, st)
+  terra::writeRaster(sst_stack, sst_tif, overwrite = TRUE)
+  saveRDS(names(sst_stack), sst_dtf)
+}
+
+sst_by_date <- NULL
+if (file.exists(sst_tif)) {
+  sst_stack <- terra::rast(sst_tif)
+  lyr_dates <- as.Date(readRDS(sst_dtf))
+  names(sst_stack) <- format(lyr_dates)
+  # build_aux_matrix() looks a layer up by "YYYY-MM-DD" and, when it is absent,
+  # falls back to a network fetch needing rerddap. Guarantee a layer for every
+  # date in range by mapping each to its nearest available layer, so that
+  # fallback can never fire mid-fit.
+  idx <- vapply(all_dates, function(d) which.min(abs(lyr_dates - d)), 1L)
+  gap <- max(abs(as.numeric(lyr_dates[idx] - all_dates)))
+  sst_by_date <- lapply(idx, function(i) sst_stack[[i]])
+  names(sst_by_date) <- format(all_dates)
+  cat(sprintf("OISST: %d layers, %d x %d cells, max |date gap| %d d\n",
+              terra::nlyr(sst_stack), terra::ncol(sst_stack), terra::nrow(sst_stack), gap))
+} else message("no SST layers; the SST term will be skipped")
+```
+
+## Bathymetry (ETOPO1, 0-360)
+
+```{r bathy}
+bathy_tif <- file.path(params$cache_dir, "bathy.tif")
+if (!file.exists(bathy_tif) && isTRUE(params$fetch_env)) {
+  f <- file.path(tempdir(), "etopo.nc")
+  u <- sprintf("%setopo360.nc?altitude[(%f):%d:(%f)][(%f):%d:(%f)]", erddap,
+               bbox[["ymin"]], params$bathy_stride, bbox[["ymax"]],
+               bbox[["xmin"]], params$bathy_stride, bbox[["xmax"]])
+  utils::download.file(enc(u), f, mode = "wb", quiet = TRUE)
+  terra::writeRaster(nc_to_rast(f, "altitude", has_time = FALSE), bathy_tif, overwrite = TRUE)
+}
+
+depth_rast <- sea_rast <- NULL
+if (file.exists(bathy_tif)) {
+  elev <- terra::rast(bathy_tif)
+  # bathy_source() and floor_rule() both want seafloor depth POSITIVE DOWN, with
+  # land at 0 so a land cell cannot satisfy any non-trivial dive.
+  depth_rast <- -1 * elev
+  depth_rast[depth_rast < 0] <- 0
+  names(depth_rast) <- "depth_m"
+  sea_rast <- terra::classify(depth_rast, rbind(c(-Inf, 0.5, 0), c(0.5, Inf, 1)))
+  names(sea_rast) <- "sea"
+  cat(sprintf("ETOPO1: %d x %d cells, max depth %.0f m, %.1f%% sea\n",
+              terra::ncol(depth_rast), terra::nrow(depth_rast),
+              terra::global(depth_rast, "max", na.rm = TRUE)[1, 1],
+              100 * terra::global(sea_rast, "mean", na.rm = TRUE)[1, 1]))
+} else message("no bathymetry; depth and mask terms will be skipped")
+```
+
+## Is Mk9 temperature usable as an SST proxy? (and why SST is switched off)
+
+The obvious second sensor is the external thermistor, matched against remotely
+sensed SST. Whether that helps depends entirely on whether the reading is of the
+water. Two things spoil it here. A hauled-out animal warms the sensor toward
+body temperature. And an animal lying at the very surface has the sensor partly
+in air. Both push the reading **up**, and because the North Pacific SST gradient
+is meridional, a warm bias moves the estimate **south** by roughly 2.5 degrees of
+latitude per degree Celsius.
+
+Since the true position is known from Argos, this can be measured rather than
+argued about: compare the tag reading with OISST at the animal's actual
+position, stratified by how shallow it got.
+
+```{r sst-validation}
+sst_check <- if (is.null(sst_by_date)) NULL else do.call(rbind, lapply(names(tags), function(id) {
+  g <- tags[[id]]
+  tr <- interp_argos_xy(g$argos, g$light$time)
+  d <- data.frame(id = id, depth_min = g$light$depth_min, depth_max = g$light$depth_max,
+                  temp = g$light$temp_surf, lon = tr$lon, lat = tr$lat,
+                  day = format(as.Date(g$light$time)))
+  d <- d[is.finite(d$lon) & is.finite(d$temp), ]
+  d$oisst <- NA_real_
+  for (dy in unique(d$day)) {
+    k <- which(d$day == dy)
+    lyr <- sst_by_date[[dy]]
+    if (!is.null(lyr)) d$oisst[k] <- as.numeric(terra::extract(lyr, cbind(d$lon[k], d$lat[k]))[, 1])
+  }
+  d$resid <- d$temp - d$oisst
+  d[is.finite(d$resid), ]
+}))
+
+if (!is.null(sst_check)) {
+  band <- cut(sst_check$depth_min, c(-Inf, 0.5, 2, 5, 10, Inf))
+  print(data.frame(
+    shallowest_point_m = levels(band),
+    n = as.integer(table(band)),
+    mean_resid_C = round(tapply(sst_check$resid, band, mean), 2),
+    sd_C = round(tapply(sst_check$resid, band, stats::sd), 2),
+    pct_over_2C = round(100 * tapply(sst_check$resid > 2, band, mean)),
+    row.names = NULL))
+  hauled <- sst_check$depth_max < 2          # never dived in the whole window
+  cat(sprintf("\nwindows where the animal never dived (hauled out): n = %d, mean residual %+.2f C, max %+.1f C\n",
+              sum(hauled), mean(sst_check$resid[hauled]), max(sst_check$resid[hauled])))
+}
+```
+
+The thermistor is an **excellent** SST sensor between about 2 and 10 m, where it
+is submerged but shallow, and an unusable one at the surface or hauled out. The
+naive choice, taking the warmest near-surface reading in each knot, is the worst
+possible reducer, because it selects precisely the contaminated readings.
+
+Two consequences. First, if SST is used at all it must be restricted to the
+2-10 m band with a low-order reducer, which is what `sst_depth_band` and the
+`min` reducer in section 5.1 do. Second, and the reason `use_sst` is `FALSE` by
+default here: after that filtering there are few enough qualifying readings, and
+enough residual risk of contamination, that SST is not the term to test sensor
+fusion with. **Depth is.** The tag's own depth channel against a bathymetric
+chart is unambiguous, needs no calibration, and is the term that produces the
+speed-up in section 8. Keeping SST off makes the fusion contrast a clean test of
+one mechanism rather than a mixture of two, one of which is known to be biased.
+
+```{r surf-series}
+# The per-knot SST channel, if it is wanted: submerged but shallow only.
+sst_band <- as.numeric(strsplit(params$sst_depth_band, ",")[[1]])
+surf <- lapply(tags, function(g) {
+  s <- g$light[is.finite(g$light$temp_surf) &
+               g$light$depth_min >= sst_band[1] & g$light$depth_min <= sst_band[2],
+               c("time", "temp_surf")]
+  names(s)[2] <- "temp"
+  s
+})
+data.frame(id = names(tags),
+           n_windows = vapply(tags, function(g) nrow(g$light), 0L),
+           n_in_band = vapply(surf, nrow, 0L),
+           pct = round(100 * vapply(surf, nrow, 0L) /
+                       vapply(tags, function(g) nrow(g$light), 0L), 1),
+           row.names = NULL)
+```
+
+# Model configuration
+
+## Sensor-fusion terms
+
+Three terms, built per tag from that tag's own channels, in a soft and a hard
+variant.
+
+**Soft** (`floor_rule(sd = ...)`, `mask_rule(penalty = -20)`) tolerates
+bathymetry-grid and depth-sensor error, but every cell still has to be
+evaluated.
+
+**Hard** (`floor_rule()`, `mask_rule(-Inf)`) declares a cell impossible, and the
+engines then skip the light likelihood there entirely. That is where the
+speed-up in section 8 comes from. To keep a hard constraint from excluding the
+truth, the knot's deepest dive is reduced by `bathy_margin_m` first, so the
+requirement is "the seabed is at least (deepest dive minus 300 m) deep" rather
+than an exact match against a 7 km bathymetry grid.
+
+```{r terms}
+# build_aux_matrix() evaluates a source once per unique knot DATE, even for a
+# static field. The closure below is rebuilt per tag and always sees that tag's
+# own candidate coordinates, so memoising on first call is safe and removes a
+# few hundred redundant raster extractions per tag.
+memo_static <- function(fun) {
+  cached <- NULL
+  src <- function(lon, lat, date = NULL) {
+    if (is.null(cached)) cached <<- fun(lon, lat, NULL)
+    cached
+  }
+  class(src) <- c("tf_source", "function"); src
+}
+
+make_terms <- function(id, df = NULL, hard = FALSE) {
+  g <- tags[[id]]; if (is.null(g)) return(list())
+  out <- list()
+
+  if (isTRUE(params$use_sst) && !is.null(sst_by_date) && nrow(surf[[id]]) >= 50) {
+    out$sst <- location_term(
+      name = "sst", tag = data.frame(time = surf[[id]]$time, value = surf[[id]]$temp),
+      # Lowest reading in the knot, not the highest. Section 4.3 shows the only
+      # contamination left after the depth-band filter is warm (residual air or
+      # body heat), so a low-order reducer is the robust choice; taking the
+      # warmest is the worst available option.
+      reduce = "min",
+      source = sst_source(rast = sst_by_date),
+      rule   = student_rule(sd = params$sst_sd, df = params$sst_df))
+  }
+
+  if (!is.null(depth_rast)) {
+    out$bathy <- location_term(
+      name = "bathy", tag = data.frame(time = g$light$time, value = g$light$depth_max),
+      reduce = if (hard) function(x) {
+                 if (all(is.na(x))) NA_real_
+                 else max(0, max(x, na.rm = TRUE) - params$bathy_margin_m)
+               } else "max",
+      source = memo_static(bathy_source(rast = depth_rast)),
+      rule   = if (hard) floor_rule() else floor_rule(sd = params$bathy_sd))
+  }
+
+  if (!is.null(sea_rast)) {
+    out$sea <- location_term(
+      name = "sea", source = memo_static(raster_source(sea_rast)),
+      rule = mask_rule(penalty = if (hard) -Inf else params$soft_mask_penalty))
+  }
+  unname(out)
+}
+soft_terms <- function(id, df) make_terms(id, df, hard = FALSE)
+hard_terms <- function(id, df) make_terms(id, df, hard = TRUE)
+
+term_inventory <- do.call(rbind, lapply(names(tags), function(id) {
+  tm <- make_terms(id)
+  data.frame(id = id, n_terms = length(tm),
+             terms = paste(vapply(tm, function(t) t$name, ""), collapse = "+"),
+             row.names = NULL)
+}))
+term_inventory
+```
+
+## The surrogate mesh
+
+`TwilightFreeHier()` proposes from a coarse grid-HMM smoother on an internal
+mesh spanning `range(deploy, retrieve) +/- mesh_pad`. Deployment and recovery
+are the same colony here, so that box is a single point and the padding sets the
+mesh outright. These animals range about 60 degrees west but only about 20
+degrees north, and a single scalar pad wide enough for the longitude would put
+mesh rows past the pole, where `solar_zenith()` silently returns mirror-point
+geometry and those cells pollute the proposal's mean and covariance. `mesh_pad`
+therefore takes `c(lon_pad, lat_pad)`, and the latitude range is clamped to
++/- 88 degrees.
+
+```{r mesh}
+pad  <- c(params$mesh_pad_lon, params$mesh_pad_lat)
+lon0 <- range(c(tag_table$deploy_lon, tag_table$recover_lon))
+lat0 <- range(c(tag_table$deploy_lat, tag_table$recover_lat))
+need_lon <- max(lon0[1] - min(all_lon), max(all_lon) - lon0[2]) + 4
+need_lat <- max(lat0[1] - min(all_lat), max(all_lat) - lat0[2]) + 4
+cat(sprintf("mesh_pad = c(%.0f, %.0f) | needed: lon >= %.0f, lat >= %.0f\n",
+            pad[1], pad[2], need_lon, need_lat))
+if (pad[1] < need_lon) warning("longitude pad is smaller than the observed range")
+if (pad[2] < need_lat) warning("latitude pad is smaller than the observed range")
+mesh_lon <- seq(lon0[1] - pad[1], lon0[2] + pad[1], by = params$coarse_res)
+mesh_lat <- seq(max(-88, lat0[1] - pad[2]), min(88, lat0[2] + pad[2]), by = params$coarse_res)
+cat(sprintf("surrogate mesh: lon %.0f..%.0f, lat %.0f..%.0f, %d x %d = %d cells\n",
+            min(mesh_lon), max(mesh_lon), min(mesh_lat), max(mesh_lat),
+            length(mesh_lon), length(mesh_lat), length(mesh_lon) * length(mesh_lat)))
+```
+
+`coarse_res` also sets the resolution at which this engine sees the auxiliary
+terms: the SST field a knot sees is piecewise constant on 2-degree cells. In the
+North Pacific transition zone SST falls by roughly 0.5-1 degree C per degree of
+latitude, so a 2-degree mesh quantises the SST constraint into steps comparable
+to `sst_sd`. That is the main approximation in the hierarchical fusion path, and
+it is what the grid HMM batch, on 1-degree cells, is there to check.
+
+## The HMM grid
+
+```{r grid}
+grid <- terra::rast(xmin = floor(bbox[["xmin"]]), xmax = ceiling(bbox[["xmax"]]),
+                    ymin = floor(bbox[["ymin"]]), ymax = ceiling(bbox[["ymax"]]),
+                    resolution = params$grid_cell_deg, crs = "EPSG:4326")
+terra::values(grid) <- 1
+cat(sprintf("grid HMM: %d x %d = %d cells at %.1f degrees\n",
+            terra::ncol(grid), terra::nrow(grid), terra::ncell(grid), params$grid_cell_deg))
+```
+
+## Panel inputs
+
+```{r panel}
+panel <- function(tg) list(
+  data = stats::setNames(lapply(tg, function(g)
+    data.frame(Date = g$light$time, Light = g$light$light)), names(tg)),
+  locations = data.frame(
+    id = names(tg),
+    deploy_lon   = vapply(tg, function(g) unname(g$deploy[["lon"]]), 0),
+    deploy_lat   = vapply(tg, function(g) unname(g$deploy[["lat"]]), 0),
+    retrieve_lon = vapply(tg, function(g) unname(g$recover[["lon"]]), 0),
+    retrieve_lat = vapply(tg, function(g) unname(g$recover[["lat"]]), 0), row.names = NULL))
+P     <- panel(tags)
+P_raw <- panel(tags_raw)
+P$locations
+```
+
+# Fitting
+
+## Hierarchical batches
+
+```{r hier}
+fit_hier <- function(pp, terms) timed(TwilightFreeHier(
+  data = pp$data, locations = pp$locations, terms = terms,
+  step_hours = params$step_hours, coarse_res = params$coarse_res, mesh_pad = pad,
+  surrogate_diffusion = params$surrogate_diffusion,
+  sweeps = as.integer(params$sweeps), burn = as.integer(params$burn),
+  thin = as.integer(params$thin), metric = "spherical", seed = params$seed))
+
+hier_light     <- cache_rds("fit_hier_light",     fit_hier(P,     NULL))
+hier_fusion    <- cache_rds("fit_hier_fusion",    fit_hier(P,     soft_terms))
+hier_light_raw <- cache_rds("fit_hier_light_raw", fit_hier(P_raw, NULL))
+
+for (nm in c("hier_light", "hier_fusion", "hier_light_raw"))
+  cat(sprintf("%-16s %7.1f s (%.1f min)\n", nm, get(nm)$seconds, get(nm)$seconds / 60))
+print(hier_light$value)
+print(hier_fusion$value)
+```
+
+## Grid HMM batches
+
+This is the engine in which a hard constraint pays for itself, because candidate
+locations are enumerated explicitly: a cell excluded by bathymetry or by the
+coastline never has its light likelihood evaluated at all.
+
+```{r grid-fits}
+fit_grid_one <- function(id, terms) {
+  g <- tags[[id]]
+  invisible(capture.output(
+    f <- TwilightFreeGrid(g$light$time, g$light$light, grid = grid,
+                          start_lon = unname(g$deploy[["lon"]]),
+                          start_lat = unname(g$deploy[["lat"]]),
+                          end_lon   = unname(g$recover[["lon"]]),
+                          end_lat   = unname(g$recover[["lat"]]),
+                          step_hours = params$step_hours,
+                          diffusion = params$grid_diffusion, terms = terms)))
+  # Keep only what the comparison needs: the full posterior is K x n doubles.
+  list(time = f$fit$time, lon = f$fit$lon, lat = f$fit$lat, log_z = f$log_z)
+}
+fit_grid_batch <- function(terms_fn) timed(stats::setNames(lapply(names(tags), function(id) {
+  message("grid: ", id)
+  fit_grid_one(id, if (is.null(terms_fn)) list() else terms_fn(id, NULL))
+}), names(tags)))
+
+grid_light  <- cache_rds("fit_grid_light",  fit_grid_batch(NULL))
+grid_fusion <- cache_rds("fit_grid_fusion", fit_grid_batch(hard_terms))
+cat(sprintf("grid_light  %7.1f s (%.1f min)\ngrid_fusion %7.1f s (%.1f min)\n",
+            grid_light$seconds, grid_light$seconds / 60,
+            grid_fusion$seconds, grid_fusion$seconds / 60))
+```
+
+## FFBS on a subset
+
+The hierarchical engine proposes from a coarse mesh and the grid HMM discretises
+space; FFBS works in continuous space with neither, so it checks whether
+discretisation is costing accuracy. It is `O(N^2)` per knot and single-track, so
+it runs on the tags with the densest Argos coverage, where the comparison can be
+made most precisely.
+
+```{r ffbs}
+ffbs_ids <- names(sort(vapply(tags, function(g) nrow(g$argos) / max(g$days, 1), 0),
+                       decreasing = TRUE))[seq_len(min(params$ffbs_n, length(tags)))]
+cat("FFBS subset:", paste(ffbs_ids, collapse = ", "), "\n")
+
+# The SMC engine rasterises auxiliary terms onto a background grid, and when no
+# `spatial_mask` is supplied that grid defaults to 2 degrees spanning -180..180.
+# This analysis works in 0..360, so every particle would fall outside that
+# extent, be clamped to the edge column, and receive a constant auxiliary value:
+# the terms would silently do nothing. Supplying a mask over the study domain
+# fixes the convention. It is all-ones inside the domain, so it is the same mild
+# "stay in the study box" constraint in BOTH ffbs batches and cannot confound the
+# light-versus-fusion contrast.
+smc_domain <- terra::rast(xmin = floor(bbox[["xmin"]]), xmax = ceiling(bbox[["xmax"]]),
+                          ymin = floor(bbox[["ymin"]]), ymax = ceiling(bbox[["ymax"]]),
+                          resolution = 1, crs = "EPSG:4326")
+terra::values(smc_domain) <- 1
+
+run_ffbs <- function(id, terms) {
+  g <- tags[[id]]
+  TwilightFreeSMC(date_time = g$light$time, light = g$light$light,
+    n_particles = as.integer(params$ffbs_particles),
+    start_lon = unname(g$deploy[["lon"]]),  start_lat = unname(g$deploy[["lat"]]),
+    end_lon   = unname(g$recover[["lon"]]), end_lat   = unname(g$recover[["lat"]]),
+    method = "ffbs", step_hours = params$step_hours,
+    diffusion = params$grid_diffusion, spatial_mask = smc_domain,
+    terms = terms, seed = params$seed)
+}
+ffbs_light  <- cache_rds("fit_ffbs_light", timed(stats::setNames(lapply(ffbs_ids, function(id) {
+  message("ffbs light: ", id); run_ffbs(id, list()) }), ffbs_ids)))
+ffbs_fusion <- cache_rds("fit_ffbs_fusion", timed(stats::setNames(lapply(ffbs_ids, function(id) {
+  message("ffbs fusion: ", id); run_ffbs(id, soft_terms(id, NULL)) }), ffbs_ids)))
+cat(sprintf("ffbs_light  %7.1f s\nffbs_fusion %7.1f s\n",
+            ffbs_light$seconds, ffbs_fusion$seconds))
+```
+
+# Validation against Argos
+
+Argos positions are interpolated to the fitted knot times, but only where a knot
+is bracketed by fixes no more than `argos_max_gap_h` apart; other knots are
+scored as missing rather than compared with a guess. Argos error for these
+classes is of order 1-10 km against a light-geolocation error of order 100 km,
+so treating it as truth is safe, and the interpolation, not the Argos error, is
+what the gap rule guards against.
+
+```{r scoring}
+in_equinox <- function(times, half_width = 21) {
+  yrs <- unique(as.integer(format(times, "%Y")))
+  eq <- as.POSIXct(c(paste0(yrs, "-03-20"), paste0(yrs, "-09-22")), tz = "UTC")
+  apply(outer(as.numeric(times), as.numeric(eq),
+              function(a, b) abs(a - b) / 86400), 1, min) <= half_width
+}
+
+score_tag <- function(id, knot_time, est_lon, est_lat, lon_sd, lat_sd, engine, batch) {
+  est_lon <- lon360(est_lon)
+  truth <- interp_argos_xy(tags[[id]]$argos, knot_time, params$argos_max_gap_h)
+  data.frame(id = id, engine = engine, batch = batch, time = knot_time,
+             est_lon = est_lon, est_lat = est_lat,
+             true_lon = truth$lon, true_lat = truth$lat,
+             err_km = gc_dist_km(est_lon, est_lat, truth$lon, truth$lat),
+             err_lon = dlon(est_lon, truth$lon), err_lat = est_lat - truth$lat,
+             lon_sd = if (is.null(lon_sd)) NA_real_ else lon_sd,
+             lat_sd = if (is.null(lat_sd)) NA_real_ else lat_sd,
+             equinox = in_equinox(knot_time), row.names = NULL)
+}
+
+summarise_tag <- function(k) {
+  kk <- k[is.finite(k$err_km), , drop = FALSE]; eq <- kk$equinox
+  data.frame(id = k$id[1], engine = k$engine[1], batch = k$batch[1],
+    n_knots = nrow(k), n_scored = nrow(kk),
+    median_km = stats::median(kk$err_km), rmse_km = sqrt(mean(kk$err_km^2)),
+    q90_km = unname(stats::quantile(kk$err_km, .9)),
+    bias_lon = mean(kk$err_lon), bias_lat = mean(kk$err_lat),
+    rmse_lon_deg = sqrt(mean(kk$err_lon^2)), rmse_lat_deg = sqrt(mean(kk$err_lat^2)),
+    median_km_equinox = if (any(eq))  stats::median(kk$err_km[eq])  else NA_real_,
+    median_km_other   = if (any(!eq)) stats::median(kk$err_km[!eq]) else NA_real_,
+    cover95_lon = if (all(is.na(kk$lon_sd))) NA_real_ else
+                    mean(abs(kk$err_lon) <= 1.96 * kk$lon_sd),
+    cover95_lat = if (all(is.na(kk$lat_sd))) NA_real_ else
+                    mean(abs(kk$err_lat) <= 1.96 * kk$lat_sd), row.names = NULL)
+}
+```
+
+```{r score-all}
+score_hier <- function(fit, label) do.call(rbind, lapply(names(fit$tracks), function(id) {
+  tr <- fit$tracks[[id]]
+  score_tag(id, tr$time, tr$lon, tr$lat, tr$lon_sd, tr$lat_sd, "hier", label) }))
+score_grid <- function(fits, label) do.call(rbind, lapply(names(fits), function(id) {
+  f <- fits[[id]]
+  score_tag(id, as.POSIXct(f$time, origin = "1970-01-01", tz = "UTC"),
+            f$lon, f$lat, NULL, NULL, "grid", label) }))
+score_smc <- function(fits, label) do.call(rbind, lapply(names(fits), function(id) {
+  r <- fits[[id]]
+  score_tag(id, as.POSIXct(r$knot_times, origin = "1970-01-01", tz = "UTC"),
+            r$lon, r$lat, r$lon_sd, r$lat_sd, "ffbs", label) }))
+
+knots <- rbind(
+  score_hier(hier_light$value,     "light"),
+  score_hier(hier_fusion$value,    "light+env"),
+  score_hier(hier_light_raw$value, "light, raw clock"),
+  score_grid(grid_light$value,     "light"),
+  score_grid(grid_fusion$value,    "light+env"),
+  score_smc(ffbs_light$value,      "light"),
+  score_smc(ffbs_fusion$value,     "light+env"))
+
+results <- do.call(rbind, lapply(split(knots, list(knots$id, knots$engine, knots$batch),
+                                       drop = TRUE), summarise_tag))
+row.names(results) <- NULL
+write.csv(results, file.path(params$out_dir, "per_tag_results.csv"), row.names = FALSE)
+write.csv(knots,   file.path(params$out_dir, "per_knot_errors.csv"), row.names = FALSE)
+results[order(results$engine, results$batch, results$id),
+        c("id", "engine", "batch", "n_scored", "median_km", "rmse_km",
+          "bias_lon", "bias_lat", "cover95_lon", "cover95_lat")]
+```
+
+## Batch summary
+
+```{r batch-summary}
+# Pooled over knots, not averaged over per-tag summaries, so a 248-day
+# deployment carries more weight than a 137-day one. Coverage is averaged over
+# tags, because it is a property of the reported intervals rather than of a knot.
+agg <- function(k, r) {
+  kk <- k[is.finite(k$err_km), , drop = FALSE]; eq <- kk$equinox
+  data.frame(n_tags = length(unique(kk$id)), n_knots = nrow(kk),
+    median_km = round(stats::median(kk$err_km), 1),
+    rmse_km   = round(sqrt(mean(kk$err_km^2)), 1),
+    q90_km    = round(unname(stats::quantile(kk$err_km, .9)), 1),
+    rmse_lon_deg = round(sqrt(mean(kk$err_lon^2)), 2),
+    rmse_lat_deg = round(sqrt(mean(kk$err_lat^2)), 2),
+    equinox_km = if (any(eq))  round(stats::median(kk$err_km[eq]), 1)  else NA_real_,
+    other_km   = if (any(!eq)) round(stats::median(kk$err_km[!eq]), 1) else NA_real_,
+    cover95_lon = round(mean(r$cover95_lon, na.rm = TRUE), 2),
+    cover95_lat = round(mean(r$cover95_lat, na.rm = TRUE), 2))
+}
+keys <- unique(paste(results$engine, results$batch, sep = " / "))
+batch <- do.call(rbind, lapply(keys, function(kk) {
+  p <- strsplit(kk, " / ", fixed = TRUE)[[1]]
+  cbind(batch = kk, agg(knots[knots$engine == p[1] & knots$batch == p[2], ],
+                        results[results$engine == p[1] & results$batch == p[2], ]))
+}))
+row.names(batch) <- NULL
+batch
+```
+
+## Paired contrasts
+
+```{r paired}
+paired <- function(engine, a, b, label) {
+  m <- merge(results[results$engine == engine & results$batch == a, ],
+             results[results$engine == engine & results$batch == b, ],
+             by = "id", suffixes = c("_a", "_b"))
+  if (!nrow(m)) return(NULL)
+  data.frame(contrast = label, engine = engine, n = nrow(m),
+    d_median_km = round(mean(m$median_km_b - m$median_km_a), 1),
+    pct_change  = round(100 * mean((m$median_km_b - m$median_km_a) / m$median_km_a), 1),
+    improved    = sum(m$median_km_b < m$median_km_a),
+    d_lat_deg   = round(mean(m$rmse_lat_deg_b - m$rmse_lat_deg_a), 2),
+    d_lon_deg   = round(mean(m$rmse_lon_deg_b - m$rmse_lon_deg_a), 2),
+    d_equinox_km = round(mean(m$median_km_equinox_b - m$median_km_equinox_a, na.rm = TRUE), 1),
+    p_wilcoxon  = tryCatch(signif(stats::wilcox.test(m$median_km_a, m$median_km_b,
+                                                     paired = TRUE)$p.value, 3),
+                           error = function(e) NA_real_), row.names = NULL)
+}
+contrasts <- do.call(rbind, Filter(Negate(is.null), list(
+  paired("hier", "light", "light+env", "sensor fusion (soft)"),
+  paired("grid", "light", "light+env", "sensor fusion (hard)"),
+  paired("ffbs", "light", "light+env", "sensor fusion (soft)"),
+  paired("hier", "light, raw clock", "light", "clock correction"))))
+contrasts
+```
+
+Negative `d_median_km` means the second batch was better. `d_lat_deg` versus
+`d_lon_deg` separates the two mechanisms: SST in the North Pacific varies far
+more strongly with latitude than with longitude, so an SST term that is working
+shows up as a drop in latitude error, concentrated in the equinox window, while
+leaving longitude alone. A clock correction, conversely, should move longitude
+and nothing else.
+
+# Timing, and whether fusion pays for itself
+
+```{r timing}
+tag_days  <- sum(vapply(tags, function(g) g$days, 0))
+ffbs_days <- sum(vapply(tags[ffbs_ids], function(g) g$days, 0))
+timing <- data.frame(
+  batch  = c("hier_light", "hier_fusion", "hier_light_raw",
+             "grid_light", "grid_fusion", "ffbs_light", "ffbs_fusion"),
+  engine = c(rep("TwilightFreeHier", 3), rep("TwilightFreeGrid", 2),
+             rep("TwilightFreeSMC(ffbs)", 2)),
+  terms  = c("none", "soft bathy+SST+mask", "none",
+             "none", "HARD bathy+mask+SST", "none", "soft bathy+SST"),
+  n_tags = c(rep(length(tags), 5), rep(length(ffbs_ids), 2)),
+  seconds = round(c(hier_light$seconds, hier_fusion$seconds, hier_light_raw$seconds,
+                    grid_light$seconds, grid_fusion$seconds,
+                    ffbs_light$seconds, ffbs_fusion$seconds), 1))
+timing$minutes <- round(timing$seconds / 60, 2)
+timing$sec_per_tag_day <- round(timing$seconds /
+  ifelse(grepl("^ffbs", timing$batch), ffbs_days, tag_days), 3)
+timing
+
+cat(sprintf("\nGrid HMM, HARD constraints vs light only    : %+.1f%% wall clock\n",
+            100 * (grid_fusion$seconds / grid_light$seconds - 1)))
+cat(sprintf("Hierarchical, soft constraints vs light only: %+.1f%% wall clock\n",
+            100 * (hier_fusion$seconds / hier_light$seconds - 1)))
+cat(sprintf("FFBS, soft constraints vs light only        : %+.1f%% wall clock\n",
+            100 * (ffbs_fusion$seconds / ffbs_light$seconds - 1)))
+```
+
+```{r masked-fraction}
+# What fraction of the grid does the hard constraint actually exclude? That is
+# the ceiling on the speed-up, because the saving is exactly the light
+# likelihood not evaluated on excluded cells.
+cells   <- terra::crds(grid)
+sea_at  <- as.numeric(terra::extract(sea_rast, cells)[, 1])
+dep_at  <- as.numeric(terra::extract(depth_rast, cells)[, 1])
+deepest <- max(vapply(tags, function(g) max(g$light$depth_max, na.rm = TRUE), 0))
+cat(sprintf("cells excluded by the land mask             : %.1f%%\n",
+            100 * mean(sea_at == 0 | is.na(sea_at))))
+cat(sprintf("cells too shallow for the deepest dive      : %.1f%% (deepest %.0f m)\n",
+            100 * mean(dep_at < (deepest - params$bathy_margin_m), na.rm = TRUE), deepest))
+cat(sprintf("union, i.e. ceiling on the achievable saving: %.1f%%\n",
+            100 * mean(sea_at == 0 | is.na(sea_at) |
+                       dep_at < (deepest - params$bathy_margin_m))))
+```
+
+```{r spread}
+# The other half of the question: if fusion buys a tighter posterior for the same
+# number of sweeps, it is cheaper at matched precision even when it is slower
+# per sweep.
+spread <- function(fit, label) data.frame(fit = label,
+  mean_lon_sd = round(mean(vapply(fit$tracks, function(t) mean(t$lon_sd), 0)), 3),
+  mean_lat_sd = round(mean(vapply(fit$tracks, function(t) mean(t$lat_sd), 0)), 3))
+rbind(spread(hier_light$value, "hier_light"), spread(hier_fusion$value, "hier_fusion"))
+```
+
+# Population-level results
+
+```{r population}
+rbind(data.frame(fit = "light",     t(round(hier_light$value$population, 1))),
+      data.frame(fit = "light+env", t(round(hier_fusion$value$population, 1))))
+merge(hier_light$value$movement, hier_fusion$value$movement,
+      by = "id", suffixes = c("_light", "_env"))
+```
+
+# Figures
+
+```{r track-maps, fig.height = 11}
+op <- par(mfrow = c(4, 3), mar = c(3.4, 3.4, 2.2, 0.6), mgp = c(2.1, 0.7, 0))
+for (id in names(tags)) {
+  g  <- tags[[id]]
+  tl <- hier_light$value$tracks[[id]]
+  tf <- hier_fusion$value$tracks[[id]]
+  gf <- grid_fusion$value[[id]]
+  xr <- range(c(lon360(tl$lon), lon360(tf$lon), g$argos$lon))
+  yr <- range(c(tl$lat, tf$lat, g$argos$lat))
+  plot(NA, xlim = xr, ylim = yr, xlab = "lon (E)", ylab = "lat",
+       main = sprintf("%s / %s (%.0f d)", id, g$seal, g$days),
+       asp = 1 / cos(mean(yr) * pi / 180))
+  lines(g$argos$lon, g$argos$lat, col = "grey35", lwd = 2)
+  lines(lon360(tl$lon), tl$lat, col = "#2980b9", lwd = 1.2)
+  lines(lon360(tf$lon), tf$lat, col = "#c0392b", lwd = 1.2)
+  lines(lon360(gf$lon), gf$lat, col = "#27ae60", lwd = 1.0, lty = 3)
+  points(g$deploy[["lon"]], g$deploy[["lat"]], pch = 21, bg = "#2ecc71", cex = 1.2)
+}
+plot.new()
+legend("center", bty = "n", cex = 0.95,
+       legend = c("Argos (truth)", "hier, light", "hier, light+env",
+                  "grid, light+env (hard)", "deployment"),
+       col = c("grey35", "#2980b9", "#c0392b", "#27ae60", "#2ecc71"),
+       lwd = c(2, 1.2, 1.2, 1, NA), lty = c(1, 1, 1, 3, NA),
+       pch = c(NA, NA, NA, NA, 21), pt.bg = c(NA, NA, NA, NA, "#2ecc71"))
+par(op)
+```
+
+```{r error-by-doy, fig.height = 5.5}
+k <- knots[is.finite(knots$err_km) & knots$batch %in% c("light", "light+env"), ]
+k$doy <- as.integer(format(k$time, "%j"))
+brk <- seq(0, 378, by = 14); mid <- utils::head(brk, -1) + 7
+op <- par(mfrow = c(1, 2), mar = c(4.2, 4.2, 2.4, 0.8))
+for (eng in c("hier", "grid")) {
+  ke <- k[k$engine == eng, ]
+  if (!nrow(ke)) next
+  plot(NA, xlim = range(ke$doy), ylim = c(0, stats::quantile(ke$err_km, .95)),
+       xlab = "day of year", ylab = "great-circle error (km)", main = paste(eng, "engine"))
+  rect(265 - 21, -1e4, 265 + 21, 1e4, col = "#f4ecf7", border = NA)   # September equinox
+  for (b in c("light", "light+env")) {
+    kb <- ke[ke$batch == b, ]; if (!nrow(kb)) next
+    lines(mid, as.numeric(tapply(kb$err_km, cut(kb$doy, brk), stats::median)),
+          col = if (b == "light") "#2980b9" else "#c0392b", lwd = 2)
+  }
+  legend("topleft", c("light", "light + env", "equinox +/- 21 d"),
+         col = c("#2980b9", "#c0392b", "#f4ecf7"), lwd = c(2, 2, 8), bty = "n", cex = 0.9)
+}
+par(op)
+```
+
+```{r error-vs-depth, fig.height = 4.5}
+# Does the error track how deep the animal was? This is the empirical form of
+# "light at depth is less informative", and it is what motivates the bathymetry
+# term doing double duty as an information source and as a pruning device.
+kd <- knots[knots$engine == "hier" & knots$batch == "light" & is.finite(knots$err_km), ]
+kd$maxdepth <- unlist(lapply(split(seq_len(nrow(kd)), kd$id), function(ix) {
+  g <- tags[[kd$id[ix[1]]]]
+  vapply(as.numeric(kd$time[ix]), function(tt) {
+    sel <- g$light$time > tt - params$step_hours * 3600 & g$light$time <= tt
+    if (any(sel)) max(g$light$depth_max[sel], na.rm = TRUE) else NA_real_
+  }, 0)
+}))
+bins <- cut(kd$maxdepth, breaks = c(0, 200, 400, 600, 800, 1000, Inf))
+op <- par(mar = c(4.4, 4.2, 2.4, 0.8))
+boxplot(kd$err_km ~ bins, outline = FALSE, col = "#d6eaf8",
+        xlab = "deepest dive in the knot (m)", ylab = "error (km)",
+        main = "Position error vs diving depth (hierarchical, light only)")
+par(op)
+print(round(tapply(kd$err_km, bins, stats::median), 1))
+```
+
+# Reproducibility record
+
+```{r provenance}
+saveRDS(list(params = params, manifest = manifest, meta = meta, tag_table = tag_table,
+             results = results, batch = batch, contrasts = contrasts, timing = timing,
+             clock_table = clock_table, spot_drift = spot_drift,
+             session = utils::sessionInfo()),
+        file.path(params$out_dir, "analysis_record.rds"))
+utils::sessionInfo()
+```
+
+## Notes for the manuscript
+
+- Panel: 10 female post-moult northern elephant seals, Ano Nuevo 2021, 137-248
+  day deployments, Mk9 archival light at 4 s thinned to 10 min, Argos ground
+  truth. One instrument in the folder carried no light channel and was dropped.
+- Median and RMSE error against Argos per engine and per batch (7.2), with the
+  per-tag spread (7.1) and the latitude/longitude split.
+- The paired sensor-fusion contrast (7.3), and specifically whether the gain is
+  concentrated in latitude and in the equinox window, which is the mechanism
+  Methods 2.5 claims.
+- Wall clock per batch (section 8) with the excluded-cell fraction alongside.
+  The claim to make is narrow and testable: a **hard** auxiliary constraint makes
+  the grid HMM faster roughly in proportion to the fraction of candidate cells it
+  excludes, because the light likelihood is never evaluated there; a soft
+  constraint carrying the same information does not.
+- Nominal 95% interval coverage (7.2, 7.3), the empirical counterpart to the
+  simulation-based calibration reported on synthetic data.
+- The clock-correction contrast (7.3) alongside the SPOT tags' measured drift
+  (3.7), which shows what a clock of this vintage does over eight months.
+- Still needed from the data provider: permission to archive, permit and ethics
+  numbers, funders, and the authorship line.

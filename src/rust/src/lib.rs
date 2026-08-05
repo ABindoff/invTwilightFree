@@ -68,6 +68,46 @@ fn spike_normaliser(mu: f64, lambda: f64, max_light: f64) -> f64 {
     (lo + hi).max(1e-12)
 }
 
+/// Copy a calibration slice into a fixed-size array so `Ctx` needs no lifetime
+/// for it. Anything beyond the first four entries is ignored.
+#[inline]
+fn cal_array(c: &[f64]) -> [f64; 4] {
+    let mut a = [0.0f64; 4];
+    for i in 0..c.len().min(4) { a[i] = c[i]; }
+    a
+}
+
+/// Clear-sky expected light as a function of solar zenith angle.
+///
+/// Two response models, selected by the length of `calibration`, so that
+/// existing length-2 calls are bit-identical to before:
+///
+/// * length 2 — `c(intercept, slope)`: the original clamped-linear response,
+///   `clamp(intercept - slope*z, 0, max_light)`. Correct for a logger whose
+///   output is linear in irradiance, where light collapses within civil
+///   twilight.
+///
+/// * length 4 — `c(floor, amp, z50, scale)`: a logistic response,
+///   `floor + amp / (1 + exp((z - z50)/scale))`. `floor` is the sensor's reading
+///   in darkness, `amp` the clear-sky amplitude above it, `z50` the zenith at
+///   half amplitude, and `scale` sets the width of the transition (the 90% to
+///   10% span is about 4.39*scale). This is the model for a log-scaled channel,
+///   whose light declines smoothly over tens of degrees of zenith rather than
+///   falling off a cliff, and it degenerates to the clamped line as `scale`
+///   goes to zero. Archival tags differ in this response even within a batch,
+///   so it is fitted per tag rather than assumed.
+#[inline]
+fn expected_light(z: f64, calibration: &[f64], max_light: f64) -> f64 {
+    if calibration.len() >= 4 {
+        let (floor, amp, z50, scale) = (calibration[0], calibration[1],
+                                        calibration[2], calibration[3]);
+        let s = if scale.abs() < 1e-9 { 1e-9 } else { scale };
+        floor + amp / (1.0 + ((z - z50) / s).exp())
+    } else {
+        (calibration[0] - calibration[1] * z).max(0.0).min(max_light)
+    }
+}
+
 /// Asymmetric-exponential spike density for the spike-and-slab light model,
 /// normalised over [0, max_light]. obs <= expected: one-sided exponential
 /// (shading); obs > expected: penalised with twice the decay rate (sensor
@@ -193,7 +233,9 @@ fn interpolate_lon(lon1: f64, lon2: f64, f: f64) -> f64 {
 /// @param step_hours Hours between particle movement steps
 /// @param diffusion Diffusion coefficient (kilometers per sqrt(day))
 /// @param trans_prob Flattened row-major transition probability matrix for behavioral states
-/// @param calibration c(intercept, slope)
+/// @param calibration Response parameters: `c(intercept, slope)` for the clamped-linear
+///   model, or `c(floor, amp, z50, scale)` for the logistic model (see details in
+///   `fit_light_response`). Length selects the model.
 /// @param likelihood_params c(lambda, max_light, prob_slab)
 /// @param mask_matrix Flattened spatial mask matrix (0 = impassable); empty for no mask
 /// @param mask_extent c(xmin, xmax, ymin, ymax) extent of the mask raster
@@ -242,8 +284,6 @@ fn run_particle_filter(
 ) -> List {
     let n = n_particles as usize;
     let num_obs = unix_times.len();
-    let intercept = calibration[0];
-    let slope = calibration[1];
     let lambda = likelihood_params[0];
     let max_light = likelihood_params[1];
     let prob_slab = if likelihood_params.len() > 2 { likelihood_params[2] } else { 0.05 };
@@ -432,7 +472,7 @@ fn run_particle_filter(
                 let p_lon = interpolate_lon(hist_lon[k-1][i], particles[i].lon, f);
                 
                 let zenith = zenith_from_ephem(eph_sd[j], eph_cd[j], eph_ra[j], eph_gmst[j], p_lon, p_lat);
-                let expected = (intercept - slope * zenith).max(0.0).min(max_light);
+                let expected = expected_light(zenith, &calibration, max_light);
                 let obs = obs_light[j];
                 let spike = spike_density(obs, expected, lambda, max_light);
                 let current_prob_slab = particles[i].prob_slab;
@@ -714,7 +754,7 @@ fn run_particle_filter(
             let z = zenith_from_ephem(eph_sd[j], eph_cd[j], eph_ra[j], eph_gmst[j], p_lon, p_lat);
             mean_z += z * w;
             
-            let exp = (intercept - slope * z).max(0.0).min(max_light);
+            let exp = expected_light(z, &calibration, max_light);
             let obs = obs_light[j];
             let spike = spike_density(obs, exp, lambda, max_light);
             let den = (1.0 - current_prob_slab) * spike + current_prob_slab * slab_density;
@@ -754,7 +794,9 @@ fn run_particle_filter(
 /// @param lat Latitudes of grid cells (degrees)
 /// @param unix_times Observation timestamps (seconds since 1970-01-01)
 /// @param obs_light Observed light values
-/// @param calibration c(intercept, slope)
+/// @param calibration Response parameters: `c(intercept, slope)` for the clamped-linear
+///   model, or `c(floor, amp, z50, scale)` for the logistic model (see details in
+///   `fit_light_response`). Length selects the model.
 /// @param likelihood_params c(lambda, max_light, prob_slab) or c(lambda, max_light, alpha, beta)
 /// @return Numeric vector of log-likelihoods, one per grid cell
 /// @name eval_logpk_grid
@@ -770,8 +812,6 @@ fn eval_logpk_grid(
 ) -> Vec<f64> {
     let n = lon.len();
     let num_obs = unix_times.len();
-    let intercept = calibration[0];
-    let slope = calibration[1];
     let lambda = likelihood_params[0];
     let max_light = likelihood_params[1];
     let prob_slab = if likelihood_params.len() > 3 {
@@ -794,7 +834,7 @@ fn eval_logpk_grid(
         for j in 0..num_obs {
             let (sd, cd, ra, gmst) = eph[j];
             let zenith = zenith_from_ephem(sd, cd, ra, gmst, lon[i], lat[i]);
-            let expected = (intercept - slope * zenith).max(0.0).min(max_light);
+            let expected = expected_light(zenith, &calibration, max_light);
             let obs = obs_light[j];
             let spike = spike_density(obs, expected, lambda, max_light);
             let den = (1.0 - prob_slab) * spike + prob_slab * slab_density;
@@ -826,8 +866,6 @@ fn run_grid_hmm(
     let num_states = diffusion.len();
     let k_steps = knot_times.len();
     
-    let intercept = calibration[0];
-    let slope = calibration[1];
     let lambda = likelihood_params[0];
     let max_light = likelihood_params[1];
     let prob_slab = if likelihood_params.len() > 3 {
@@ -849,43 +887,48 @@ fn run_grid_hmm(
     let eph: Vec<(f64, f64, f64, f64)> =
         (0..obs_times.len()).map(|j| solar_ephemeris(obs_times[j])).collect();
 
+    // Auxiliary location terms (priors, SST, bathymetry, masks) precomputed in R
+    // as a k_steps x n matrix, flattened row-major (index k*n + i). Seeded into
+    // every cell at every knot, including knots with no light observations, so a
+    // prior applies regardless of the light record. A -Inf entry hard-masks the
+    // cell. This runs BEFORE the light loop so a hard-masked cell can skip the
+    // per-observation light likelihood, which is the dominant cost.
+    if !aux_logl.is_empty() {
+        for k in 0..k_steps {
+            for i in 0..n {
+                logpk[k][i] = aux_logl[k * n + i];
+            }
+        }
+    }
+
     for k in 0..k_steps {
         let t_curr = knot_times[k];
         let t_prev = if k == 0 { t_curr - (knot_times[1] - knot_times[0]) } else { knot_times[k-1] };
-        
+
         let mut obs_in_k = Vec::new();
         for j in 0..obs_times.len() {
             if obs_times[j] > t_prev && obs_times[j] <= t_curr {
                 obs_in_k.push(j);
             }
         }
-        
+
         if obs_in_k.is_empty() { continue; }
-        
+
         for i in 0..n {
+            // Already ruled out by a hard auxiliary constraint: the light
+            // likelihood cannot rescue a -inf, so do not compute it.
+            if logpk[k][i] <= -1e29 { continue; }
             let mut sum_logl = 0.0;
             for &j in &obs_in_k {
                 let (sd, cd, ra, gmst) = eph[j];
                 let zenith = zenith_from_ephem(sd, cd, ra, gmst, lon[i], lat[i]);
-                let expected = (intercept - slope * zenith).max(0.0).min(max_light);
+                let expected = expected_light(zenith, &calibration, max_light);
                 let obs = obs_light[j];
                 let spike = spike_density(obs, expected, lambda, max_light);
                 let den = (1.0 - prob_slab) * spike + prob_slab * slab_density;
                 sum_logl += den.ln();
             }
-            logpk[k][i] = sum_logl;
-        }
-    }
-
-    // Auxiliary location terms (priors, SST, bathymetry, masks) precomputed in R
-    // as a k_steps x n matrix, flattened row-major (index k*n + i). Added to every
-    // cell at every knot, including knots with no light observations, so a prior
-    // applies regardless of the light record. A -Inf entry hard-masks the cell.
-    if !aux_logl.is_empty() {
-        for k in 0..k_steps {
-            for i in 0..n {
-                logpk[k][i] += aux_logl[k * n + i];
-            }
+            logpk[k][i] += sum_logl;
         }
     }
 
@@ -1261,7 +1304,10 @@ fn solve_ut(r: &[f64], y: &[f64], n: usize) -> Vec<f64> {  // R x = y (back)
 struct Ctx<'a> {
     obs_start: &'a [i32], obs_len: &'a [i32],
     obs_light: &'a [f64], eph: &'a [(f64, f64, f64, f64)],
-    intercept: f64, slope: f64, lambda: f64, max_light: f64, prob_slab: f64,
+    // Response parameters, length 2 (clamped linear) or 4 (logistic); see
+    // expected_light(). Carried as a fixed array so Ctx stays Copy-cheap.
+    cal: [f64; 4], cal_len: usize,
+    lambda: f64, max_light: f64, prob_slab: f64,
     koff: usize,
     aux: &'a [f64],       // this tag's K*ncell aux values (empty if no terms)
     aux_lon0: f64, aux_dlon: f64, aux_ncol: usize,
@@ -1271,17 +1317,13 @@ struct Ctx<'a> {
 impl<'a> Ctx<'a> {
     #[inline]
     fn emit(&self, knot: usize, lon: f64, lat: f64) -> f64 {
-        let s = self.obs_start[knot] as usize;
-        let n = self.obs_len[knot] as usize;
-        let slab = 1.0 / self.max_light;
+        // Auxiliary terms FIRST. A hard constraint (a -inf from mask_rule() or a
+        // hard floor_rule()) settles the emission on its own, so the light loop
+        // over this knot's observations is skipped entirely. This is what makes
+        // an infeasible location cheap rather than merely improbable: the light
+        // likelihood is the dominant cost, and there is no point paying it for a
+        // position the bathymetry or the coastline has already excluded.
         let mut ll = 0.0;
-        for j in s..(s + n) {
-            let (sd, cd, ra, gmst) = self.eph[j];
-            let z = zenith_from_ephem(sd, cd, ra, gmst, lon, lat);
-            let expc = (self.intercept - self.slope*z).max(0.0).min(self.max_light);
-            let spike = spike_density(self.obs_light[j], expc, self.lambda, self.max_light);
-            ll += ((1.0 - self.prob_slab)*spike + self.prob_slab*slab).ln();
-        }
         if !self.aux.is_empty() {
             let li = (((lon - self.aux_lon0) / self.aux_dlon).round() as i64)
                 .clamp(0, self.aux_ncol as i64 - 1) as usize;
@@ -1289,7 +1331,18 @@ impl<'a> Ctx<'a> {
                 .clamp(0, self.aux_nrow as i64 - 1) as usize;
             let ncell = self.aux_ncol * self.aux_nrow;
             let local = knot - self.koff;
-            ll += self.aux[local * ncell + lj * self.aux_ncol + li];
+            ll = self.aux[local * ncell + lj * self.aux_ncol + li];
+            if ll <= -1e29 { return f64::NEG_INFINITY; }
+        }
+        let s = self.obs_start[knot] as usize;
+        let n = self.obs_len[knot] as usize;
+        let slab = 1.0 / self.max_light;
+        for j in s..(s + n) {
+            let (sd, cd, ra, gmst) = self.eph[j];
+            let z = zenith_from_ephem(sd, cd, ra, gmst, lon, lat);
+            let expc = expected_light(z, &self.cal[..self.cal_len], self.max_light);
+            let spike = spike_density(self.obs_light[j], expc, self.lambda, self.max_light);
+            ll += ((1.0 - self.prob_slab)*spike + self.prob_slab*slab).ln();
         }
         ll
     }
@@ -1447,7 +1500,9 @@ fn track_update(ctx: &Ctx, xlon: &mut [f64], xlat: &mut [f64], le: &mut [f64], k
 /// @param knot_obs_len number of observations in each knot
 /// @param obs_times observation timestamps (seconds since 1970)
 /// @param obs_light observed light values (processed as by the R fit)
-/// @param calibration c(intercept, slope)
+/// @param calibration Response parameters: `c(intercept, slope)` for the clamped-linear
+///   model, or `c(floor, amp, z50, scale)` for the logistic model (see details in
+///   `fit_light_response`). Length selects the model.
 /// @param likelihood_params c(lambda, max_light, prob_slab)
 /// @param surr_mu per-knot surrogate mean, length 2K (lon, lat interleaved)
 /// @param surr_p per-knot surrogate 2x2 precision, length 4K (row-major)
@@ -1477,7 +1532,7 @@ fn run_block_track(
     let eph: Vec<(f64, f64, f64, f64)> = obs_times.iter().map(|&t| solar_ephemeris(t)).collect();
     let ctx = Ctx {
         obs_start: knot_obs_start, obs_len: knot_obs_len, obs_light: &obs_light, eph: &eph,
-        intercept: calibration[0], slope: calibration[1],
+        cal: cal_array(&calibration), cal_len: calibration.len().min(4),
         lambda: likelihood_params[0], max_light: likelihood_params[1], prob_slab: likelihood_params[2],
         koff: 0, aux: &[], aux_lon0: 0.0, aux_dlon: 1.0, aux_ncol: 0, aux_lat0: 0.0, aux_dlat: 1.0, aux_nrow: 0,
         spherical: false, km_lon2: 0.0, km_lat2: 0.0,
@@ -1537,7 +1592,8 @@ fn run_block_track(
 /// @param knot_obs_len Per-knot obs count
 /// @param obs_times Global concatenated observation timestamps
 /// @param obs_light Global concatenated observed light
-/// @param cal Per-individual c(intercept, slope), length 2*n_ind
+/// @param cal Per-individual response parameters, packed contiguously: length
+///   2*n_ind for the clamped-linear model or 4*n_ind for the logistic one.
 /// @param lp Per-individual c(lambda, max_light, prob_slab), length 3*n_ind
 /// @param surr_mu Per-knot surrogate mean (2 per knot)
 /// @param surr_p Per-knot surrogate 2x2 precision (4 per knot)
@@ -1602,13 +1658,17 @@ fn run_block_hier(
     let anrow: Vec<usize> = aux_nrow.iter().map(|&x| x as usize).collect();
     let mut aux_off = vec![0usize; n];
     for i in 1..n { aux_off[i] = aux_off[i-1] + ki[i-1] * ancol[i-1] * anrow[i-1]; }
+    // Per-individual calibration is packed contiguously; the stride says which
+    // response model it is (2 = clamped linear, 4 = logistic), so no extra
+    // argument is needed and existing length-2*n callers are unaffected.
+    let cal_stride = if n > 0 { cal.len() / n } else { 2 };
     // build a Ctx per individual (borrows global obs arrays + per-individual cal/lp/aux)
     let ctxs: Vec<Ctx> = (0..n).map(|i| {
         let ncell = ki[i] * ancol[i] * anrow[i];
         let aslice: &[f64] = if ncell > 0 { &aux_flat[aux_off[i]..aux_off[i] + ncell] } else { &[] };
         Ctx {
             obs_start: knot_obs_start, obs_len: knot_obs_len, obs_light: &obs_light, eph: &eph,
-            intercept: cal[2*i], slope: cal[2*i+1],
+            cal: cal_array(&cal[cal_stride*i .. cal_stride*(i+1)]), cal_len: cal_stride,
             lambda: lp[3*i], max_light: lp[3*i+1], prob_slab: lp[3*i+2],
             koff: koff[i], aux: aslice,
             aux_lon0: aux_lon0[i], aux_dlon: aux_dlon[i], aux_ncol: ancol[i],

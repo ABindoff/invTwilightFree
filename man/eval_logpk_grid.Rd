@@ -22,7 +22,9 @@ eval_logpk_grid(
 
 \item{obs_light}{Observed light values}
 
-\item{calibration}{c(intercept, slope)}
+\item{calibration}{Response parameters: `c(intercept, slope)` for the clamped-linear
+model, or `c(floor, amp, z50, scale)` for the logistic model (see details in
+`fit_light_response`). Length selects the model.}
 
 \item{likelihood_params}{c(lambda, max_light, prob_slab) or c(lambda, max_light, alpha, beta)}
 }

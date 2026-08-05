@@ -52,7 +52,8 @@ run_block_hier(
 
 \item{obs_light}{Global concatenated observed light}
 
-\item{cal}{Per-individual c(intercept, slope), length 2*n_ind}
+\item{cal}{Per-individual response parameters, packed contiguously: length
+2*n_ind for the clamped-linear model or 4*n_ind for the logistic one.}
 
 \item{lp}{Per-individual c(lambda, max_light, prob_slab), length 3*n_ind}
 

@@ -30,3 +30,5 @@
 ^DSpark_paper\.pdf$
 ^da_gibbs_geolocation\.zip$
 ^sbc_.*\.png$
+^analysis$
+^data/nes_untracked$

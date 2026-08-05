@@ -40,7 +40,9 @@ light_log_likelihood <- function(obs_light, expected_light, lambda, max_light, p
 #' @param step_hours Hours between particle movement steps
 #' @param diffusion Diffusion coefficient (kilometers per sqrt(day))
 #' @param trans_prob Flattened row-major transition probability matrix for behavioral states
-#' @param calibration c(intercept, slope)
+#' @param calibration Response parameters: `c(intercept, slope)` for the clamped-linear
+#'   model, or `c(floor, amp, z50, scale)` for the logistic model (see details in
+#'   `fit_light_response`). Length selects the model.
 #' @param likelihood_params c(lambda, max_light, prob_slab)
 #' @param mask_matrix Flattened spatial mask matrix (0 = impassable); empty for no mask
 #' @param mask_extent c(xmin, xmax, ymin, ymax) extent of the mask raster
@@ -72,7 +74,9 @@ run_particle_filter <- function(unix_times, obs_light, n_particles, start_lat, s
 #' @param lat Latitudes of grid cells (degrees)
 #' @param unix_times Observation timestamps (seconds since 1970-01-01)
 #' @param obs_light Observed light values
-#' @param calibration c(intercept, slope)
+#' @param calibration Response parameters: `c(intercept, slope)` for the clamped-linear
+#'   model, or `c(floor, amp, z50, scale)` for the logistic model (see details in
+#'   `fit_light_response`). Length selects the model.
 #' @param likelihood_params c(lambda, max_light, prob_slab) or c(lambda, max_light, alpha, beta)
 #' @return Numeric vector of log-likelihoods, one per grid cell
 #' @name eval_logpk_grid
@@ -87,7 +91,9 @@ run_grid_hmm <- function(lon, lat, knot_times, obs_times, obs_light, fixed_idx, 
 #' @param knot_obs_len number of observations in each knot
 #' @param obs_times observation timestamps (seconds since 1970)
 #' @param obs_light observed light values (processed as by the R fit)
-#' @param calibration c(intercept, slope)
+#' @param calibration Response parameters: `c(intercept, slope)` for the clamped-linear
+#'   model, or `c(floor, amp, z50, scale)` for the logistic model (see details in
+#'   `fit_light_response`). Length selects the model.
 #' @param likelihood_params c(lambda, max_light, prob_slab)
 #' @param surr_mu per-knot surrogate mean, length 2K (lon, lat interleaved)
 #' @param surr_p per-knot surrogate 2x2 precision, length 4K (row-major)
@@ -118,7 +124,8 @@ run_block_track <- function(knot_obs_start, knot_obs_len, obs_times, obs_light, 
 #' @param knot_obs_len Per-knot obs count
 #' @param obs_times Global concatenated observation timestamps
 #' @param obs_light Global concatenated observed light
-#' @param cal Per-individual c(intercept, slope), length 2*n_ind
+#' @param cal Per-individual response parameters, packed contiguously: length
+#'   2*n_ind for the clamped-linear model or 4*n_ind for the logistic one.
 #' @param lp Per-individual c(lambda, max_light, prob_slab), length 3*n_ind
 #' @param surr_mu Per-knot surrogate mean (2 per knot)
 #' @param surr_p Per-knot surrogate 2x2 precision (4 per knot)

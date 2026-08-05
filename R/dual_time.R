@@ -45,13 +45,20 @@ eval_logpt_loc <- function(lon, lat, times, light,
   n <- length(tt)
   lonv <- rep(lon, n); latv <- rep(lat, n)
 
+  # Normalised over [0, max_light], matching the engine's spike_density(): the
+  # normaliser depends on the expected light and therefore on the offset, so
+  # omitting it changes the shape of the profile, not just its level.
+  normaliser <- function(mu) {
+    pmax(1e-12, (1 - exp(-lambda * mu)) +
+                0.5 * (1 - exp(-2 * lambda * (max_light - mu))))
+  }
   loglik <- vapply(offsets, function(tau) {
     z <- solar_zenith(tt + tau, lonv, latv)
-    expected <- pmin(pmax(intercept - slope * z, 0), max_light)
-    spike <- ifelse(light <= expected,
-                    lambda * exp(-lambda * (expected - light)),
-                    lambda * exp(-lambda * 2 * (light - expected)))   # engine convention
-    den <- (1 - prob_slab) * spike + prob_slab * slab
+    expected <- .tf_expected_light(z, calibration, max_light)
+    raw <- ifelse(light <= expected,
+                  lambda * exp(-lambda * (expected - light)),
+                  lambda * exp(-lambda * 2 * (light - expected)))   # engine convention
+    den <- (1 - prob_slab) * raw / normaliser(expected) + prob_slab * slab
     sum(log(den))
   }, numeric(1))
 
@@ -129,15 +136,29 @@ calibrate_clock <- function(deploy, retrieve, times, light,
   )
 }
 
-# Rough light calibration for clock estimation only. The dual peak (clock offset)
-# is driven by twilight timing and is robust to the exact light scaling, so a
-# crude mapping from the light range suffices when the user supplies none.
+# Rough light calibration for clock estimation only, used when the caller
+# supplies none.
+#
+# The clock offset is identified by the TIMING OF TWILIGHT, so the calibration
+# must put the light's fall to zero where twilight actually is. Expected light
+# therefore runs from the full observed range down to zero across civil twilight
+# (zenith 85 to 96), matching the engine's own auto-calibration fallback, and the
+# light is baselined to its lower quantile so that "dark" really is zero.
+#
+# An earlier version spread the same fall across the whole 0-96 degree zenith
+# range (`calibration = c(hi, rng/96)`). That leaves a gentle ramp with no
+# twilight edge, so the profile likelihood in the offset has no interior optimum
+# and the search runs to its boundary. Tested on ten elephant-seal deployments,
+# every tag returned exactly +/- the search half-width; with the twilight slope
+# every tag returns an interior peak. Do not reintroduce a shallower slope here.
 .quick_light_calibration <- function(light) {
   lo <- as.numeric(stats::quantile(light, 0.05, na.rm = TRUE))
   hi <- as.numeric(stats::quantile(light, 0.95, na.rm = TRUE))
   rng <- max(hi - lo, .Machine$double.eps)
-  list(calibration = c(hi, rng / 96),                 # expected = hi - (rng/96)*zenith
-       likelihood_params = c(1 / (rng * 0.5), hi, 0.1))
+  slope <- rng / (96 - 85)
+  list(baseline = lo,
+       calibration = c(slope * 96, slope),   # expected = slope*(96 - zenith), clamped
+       likelihood_params = c(1 / (rng * 0.5), rng, 0.1))
 }
 
 #' Estimate the clock correction from the known deployment and retrieval fixes
@@ -167,9 +188,26 @@ calibrate_clock_from_endpoints <- function(date_time, light,
     return(NULL)
   }
   if (is.null(calibration) || is.null(likelihood_params)) {
-    qc <- .quick_light_calibration(light)
-    if (is.null(calibration)) calibration <- qc$calibration
-    if (is.null(likelihood_params)) likelihood_params <- qc$likelihood_params
+    # Fit the tag's own response curve at the known release position rather than
+    # assuming one. The clock offset is identified by the timing of twilight, so
+    # a response with the wrong transition width puts the profile's peak in the
+    # wrong place, or removes it altogether.
+    resp <- tryCatch(fit_light_response(date_time, light, start_lon, start_lat),
+                     error = function(e) NULL)
+    if (!is.null(resp)) {
+      if (is.null(calibration)) calibration <- resp$calibration
+      if (is.null(likelihood_params))
+        likelihood_params <- c(1 / (resp$amp * 0.5), resp$max_light, 0.10)
+    } else {
+      qc <- .quick_light_calibration(light)
+      if (is.null(calibration)) {
+        calibration <- qc$calibration
+        # This fallback assumes baselined light, so baseline it. A user-supplied
+        # calibration is left alone: it belongs to their light scale.
+        light <- pmax(0, light - qc$baseline)
+      }
+      if (is.null(likelihood_params)) likelihood_params <- qc$likelihood_params
+    }
   }
   calibrate_clock(
     deploy   = list(lon = start_lon, lat = start_lat, time = min(date_time)),

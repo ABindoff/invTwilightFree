@@ -41,7 +41,11 @@
 #' @param surrogate_diffusion Movement scale (km/sqrt(day)) used only to build the
 #'   proposal surrogate (exactness-neutral). Default 100.
 #' @param mesh_pad Degrees of padding around the deploy/retrieve box for the
-#'   surrogate mesh (default 20; increase for wide-ranging animals).
+#'   surrogate mesh (default 20; increase for wide-ranging animals). Either a
+#'   single value applied to both axes, or \code{c(lon_pad, lat_pad)} when the
+#'   animal ranges much further in one direction than the other, as a
+#'   central-place forager deployed and recovered at the same colony does. The
+#'   latitude range is clamped to +/- 88 degrees.
 #' @param coarse_res Surrogate mesh resolution in degrees (default 1.5).
 #' @param inflate Surrogate variance inflation (>= 1; default 1.5).
 #' @param block_len Maximum block length in knots (default 5).
@@ -220,8 +224,15 @@ TwilightFreeHier <- function(data, locations,
   K <- length(kt)
   lons <- c(loc$deploy_lon, loc$retrieve_lon); lats <- c(loc$deploy_lat, loc$retrieve_lat)
   lons <- lons[is.finite(lons)]; lats <- lats[is.finite(lats)]
-  clon <- seq(min(lons) - mesh_pad, max(lons) + mesh_pad, by = coarse_res)
-  clat <- seq(min(lats) - mesh_pad, max(lats) + mesh_pad, by = coarse_res)
+  # mesh_pad may be a single value (both axes) or c(lon_pad, lat_pad). Wide-ranging
+  # animals deployed and recovered at one colony need far more padding in longitude
+  # than in latitude, and a pad large enough for the longitudinal excursion would
+  # otherwise push mesh rows past the pole, where solar_zenith() silently returns
+  # mirror-point geometry and the cells pollute the proposal's mean and covariance.
+  pad_lon <- mesh_pad[1]
+  pad_lat <- mesh_pad[min(2L, length(mesh_pad))]
+  clon <- seq(min(lons) - pad_lon, max(lons) + pad_lon, by = coarse_res)
+  clat <- seq(max(-88, min(lats) - pad_lat), min(88, max(lats) + pad_lat), by = coarse_res)
   cg <- expand.grid(lon = clon, lat = clat); n <- nrow(cg)
   # sensor-term aux on the coarse mesh (K x n; zeros when no terms)
   aux <- build_aux_matrix(terms, cg$lon, cg$lat, kt)
