@@ -235,17 +235,26 @@ read_xlsx_grid <- function(path, sheet = 1L) {
 #   depth_max  deepest point, which is what the bathymetry floor constrains
 #   depth_min  shallowest point, which says whether the animal surfaced at all
 #   temp_surf  temperature at the shallowest record, the most SST-like reading
+# The timestamp is the instant the retained light value was actually measured,
+# NOT the start of the window. Labelling a window with its first timestamp while
+# keeping the maximum light from anywhere inside it stamps every value about half
+# a window early, which is a pure longitude bias of (minutes/2)/4 degrees --
+# identical for every tag, and easily mistaken for a fleet of clock errors.
+# Measured on these data: +15.0 min at a 30-minute window and +30.0 min at 60,
+# falling to about 1 minute once the timestamp follows the sample.
 decimate_dive <- function(d, minutes) {
   d[, .b := floor(as.numeric(time) / (minutes * 60))]
   out <- d[, {
-    i <- which.min(depth)
-    .(time = time[1],
-      light = as.numeric(max(light, na.rm = TRUE)),
+    j <- which.max(light)                    # the sample the light value comes from
+    i <- which.min(depth)                    # the shallowest point, for temperature
+    .(time = time[j],
+      light = as.numeric(light[j]),
       depth_max = as.numeric(max(depth, na.rm = TRUE)),
       depth_min = as.numeric(min(depth, na.rm = TRUE)),
       temp_surf = if (length(i)) as.numeric(temp[i]) else NA_real_)
   }, by = .b]
   out[, .b := NULL]
+  setorder(out, time)
   as.data.frame(out[is.finite(light)])
 }
 
@@ -399,7 +408,7 @@ to remove.
 # The cache key carries a format version: this chunk returns a list of
 # (main, ends) pairs, and a cache written by an earlier layout would be read
 # back as NULL for both.
-archives <- cache_rds(sprintf("archives_v2_%dmin", params$decimate_minutes), {
+archives <- cache_rds(sprintf("archives_v3_%dmin", params$decimate_minutes), {
   p <- archive_paths
   if (!is.null(params$max_tags)) p <- utils::head(p, params$max_tags)
   out <- lapply(p, function(f) {
