@@ -524,7 +524,6 @@ argos_summary
 ## Assembling the panel
 
 ```{r tags}
-plaus <- as.numeric(strsplit(params$sst_plausible, ",")[[1]])
 
 build_tag <- function(id) {
   m <- meta[match(id, meta$id), ]
@@ -581,6 +580,19 @@ the tag's clock with a known real time. These are the *SPOT* clocks, not the Mk9
 clocks, so they correct nothing here, but they show what a clock of this vintage
 does over an eight-month deployment, which is the prior for what the Mk9 is
 likely doing.
+
+```{r rtc}
+rtc_files <- list.files(argos_dir, pattern = "-RTC[.]csv$", recursive = TRUE, full.names = TRUE)
+RTC <- rbindlist(lapply(rtc_files, fread, showProgress = FALSE), fill = TRUE)
+RTC[, `:=`(tag_t  = parse_wc_time(paste(TagTime, TagDate)),
+           real_t = parse_wc_time(paste(RealTime, RealDate)))]
+RTC[, drift_s := as.numeric(tag_t - real_t, units = "secs")]
+spot_drift <- RTC[CorrectionType == "Strong",
+                  .(n_corrections = .N, last_drift_min = round(drift_s[.N] / 60, 2),
+                    lon_equiv_deg = round(drift_s[.N] / 60 * 0.25, 2)), by = Ptt]
+cat("SPOT clock drift at the last correction (positive = tag ahead of real time):\n")
+print(spot_drift)
+```
 
 **A light-based estimate.** `calibrate_clock_from_endpoints()` searches for the
 offset that maximises the light likelihood at the known deployment and recovery
@@ -960,24 +972,64 @@ top of the point cloud rather than its middle, which is what lets the fit
 survive an animal that is underwater most of the time.
 
 ```{r light-response}
+# Fitted on the working (30-minute) series over cal_window_days, not on the
+# high-resolution endpoint slice. The endpoint slice spans only a few days, and
+# a few foggy days at a coastal release site are not enough to pin a response:
+# fitted on three days, three of these ten tags returned physically impossible
+# curves (transitions of 88 to 107 degrees, saturating only above zenith 30),
+# and those three were also the three worst tracks. A longer window at coarser
+# resolution beats a short one at fine resolution here, because the response is
+# a shape in zenith, not an edge in time.
 responses <- lapply(tags, function(g) {
-  e <- archive_ends[[g$id]]                       # 1-minute light near both ends
-  k <- e$time <= min(e$time) + params$cal_window_days * 86400
-  if (sum(k) < 500) k <- rep(TRUE, nrow(e))
-  fit_light_response(e$time[k], e$light[k],
+  k <- g$light$time <= min(g$light$time) + params$cal_window_days * 86400
+  fit_light_response(g$light$time[k], g$light$light[k],
                      lon = g$deploy[["lon"]], lat = g$deploy[["lat"]])
 })
 names(responses) <- names(tags)
+
+# A transition far outside the physically sensible range means the fit failed,
+# not that the tag is exotic: a logger linear in irradiance gives about 11
+# degrees and a log-scaled channel a few tens. Such tags fall back to the median
+# of the fits that did work, which is defensible here because all ten animals
+# carried the same tag model. Substitutions are reported, never silent.
+plausible <- vapply(responses, function(r)
+  !is.null(r) && r$width_deg > 5 && r$width_deg < 60 && r$slope > 1.5, logical(1))
+if (any(plausible) && !all(plausible)) {
+  ok <- responses[plausible]
+  med <- list(calibration = c(stats::median(vapply(ok, function(r) r$calibration[1], 0)),
+                              stats::median(vapply(ok, function(r) r$calibration[2], 0))),
+              max_light = stats::median(vapply(ok, function(r) r$max_light, 0)),
+              baseline  = NA_real_,
+              slope = stats::median(vapply(ok, function(r) r$slope, 0)),
+              width_deg = stats::median(vapply(ok, function(r) r$width_deg, 0)),
+              saturate_at = stats::median(vapply(ok, function(r) r$saturate_at, 0)),
+              zero_at = stats::median(vapply(ok, function(r) r$zero_at, 0)),
+              dark_level = NA_real_)
+  for (id in names(responses)[!plausible]) {
+    keep_base <- if (is.null(responses[[id]])) NA_real_ else responses[[id]]$baseline
+    responses[[id]] <- med
+    responses[[id]]$baseline <- if (is.finite(keep_base)) keep_base else
+      as.numeric(stats::quantile(tags[[id]]$light$light, .05))
+    responses[[id]]$substituted <- TRUE
+  }
+}
+cat(sprintf("response fitted directly for %d of %d tags; %s\n",
+            sum(plausible), length(plausible),
+            if (all(plausible)) "no substitutions" else
+              paste("panel median substituted for",
+                    paste(names(plausible)[!plausible], collapse = ", "))))
 
 resp_table <- do.call(rbind, lapply(names(responses), function(id) {
   r <- responses[[id]]
   if (is.null(r)) return(data.frame(id = id, slope = NA_real_, width_deg = NA_real_,
                                     saturate_at = NA_real_, zero_at = NA_real_,
-                                    dark_level = NA_real_, baseline = NA_real_))
+                                    dark_level = NA_real_, baseline = NA_real_,
+                                    substituted = NA))
   data.frame(id = id, slope = round(r$slope, 2), width_deg = round(r$width_deg, 1),
              saturate_at = round(r$saturate_at, 1), zero_at = round(r$zero_at, 1),
-             dark_level = round(r$dark_level), baseline = round(r$baseline),
-             row.names = NULL)
+             dark_level = if (is.finite(r$dark_level)) round(r$dark_level) else NA_real_,
+             baseline = round(r$baseline),
+             substituted = isTRUE(r$substituted), row.names = NULL)
 }))
 resp_table
 cat(sprintf("\nmedian fitted slope %.2f over a %.0f degree transition\n",
@@ -999,13 +1051,14 @@ that carries the signal.
 ```{r response-plot, fig.height = 4.5}
 op <- par(mar = c(4.2, 4.2, 2.4, 0.8))
 zz <- seq(40, 130, by = 0.5)
-ymax <- max(vapply(responses, function(r) if (is.null(r)) 0 else r$dark_level + r$amp, 0))
-plot(NA, xlim = c(40, 130), ylim = c(0, ymax * 1.05),
+ymax <- max(vapply(responses, function(r)
+  if (is.null(r)) 0 else r$baseline + r$max_light, 0)) * 1.15
+plot(NA, xlim = c(40, 130), ylim = c(0, ymax),
      xlab = "solar zenith angle (degrees)", ylab = "light (tag units)",
      main = "Fitted clear-sky response, all tags")
 for (id in names(responses)) {
   r <- responses[[id]]; if (is.null(r)) next
-  lines(r$envelope$zenith, r$envelope$light, col = "#95a5a655")
+  if (!is.null(r$envelope)) lines(r$envelope$zenith, r$envelope$light, col = "#95a5a655")
   lines(zz, pmin(pmax(r$calibration[1] - r$calibration[2] * zz, 0), r$max_light) + r$baseline,
         col = "#c0392b", lwd = 1.2)
 }
