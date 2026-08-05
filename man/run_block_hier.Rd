@@ -36,6 +36,8 @@ run_block_hier(
   thin,
   polish,
   spherical,
+  crw,
+  rho_prior_sd,
   seed
 )
 }
@@ -97,12 +99,20 @@ terms), each tag a K*ncell block on its own regular lon/lat grid; empty for none
 \item{spherical}{Great-circle movement metric (exp(-gcdist^2/2 sig2)) if TRUE,
 else the flat tangent-plane metric at each tag's reference latitude}
 
+\item{crw}{Correlated random walk: model the increments as an AR(1),
+delta_t = rho*delta_{t-1} + eps, with a per-tag persistence rho sampled
+alongside the movement variance. FALSE gives the memoryless Brownian walk
+and is bit-identical to the previous behaviour.}
+
+\item{rho_prior_sd}{Standard deviation of the mean-zero normal prior on each
+tag's persistence; rho is confined to (-0.99, 0.99)}
+
 \item{seed}{RNG seed; 0 means entropy}
 }
 \value{
 List with beta and sig2 (kept draws), plus per-knot track posterior
   mean_lon/sd_lon/mean_lat/sd_lat (concatenated across individuals, same order
-  as knots_per_ind)
+  as knots_per_ind), and rho (per-tag persistence draws, zero when crw is FALSE)
 }
 \description{
 Runs the whole Gibbs sweep natively: each individual's track is updated with

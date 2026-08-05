@@ -1262,6 +1262,43 @@ fn mv_edge(km_lon2: f64, km_lat2: f64, lon1: f64, lat1: f64, lon2: f64, lat2: f6
     gc*gc - (km_lon2*dlon*dlon + km_lat2*dlat*dlat)
 }
 
+// One innovation's contribution to (CRW - Brownian) in the log-prior numerator.
+//
+// The Brownian prior penalises |delta_t|^2; the correlated random walk penalises
+// the INNOVATION |delta_t - rho*delta_{t-1}|^2. The difference is what has to be
+// added to an acceptance ratio whose proposal already carries the Brownian term,
+// which is how the spherical metric is handled too. Increments are in km via the
+// tag's reference metric, so this composes with the spherical correction rather
+// than duplicating it.
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn crw_innov(km_lon2: f64, km_lat2: f64, rho: f64,
+             lon0: f64, lat0: f64, lon1: f64, lat1: f64, lon2: f64, lat2: f64) -> f64 {
+    let (d1x, d1y) = (lon1 - lon0, lat1 - lat0);
+    let (d2x, d2y) = (lon2 - lon1, lat2 - lat1);
+    let dot  = km_lon2*d2x*d1x + km_lat2*d2y*d1y;
+    let prev = km_lon2*d1x*d1x + km_lat2*d1y*d1y;
+    -2.0*rho*dot + rho*rho*prev
+}
+
+// Sum crw_innov over the innovations a move touches. Innovation t is built from
+// knots t-2, t-1 and t, so moving knot m disturbs innovations m, m+1 and m+2.
+// Defined for 2 ..= k-1.
+fn crw_sum<F: Fn(usize) -> (f64, f64)>(ctx: &Ctx, pos: F, k: usize,
+                                       lo: usize, hi: usize) -> f64 {
+    let t0 = if lo < 2 { 2 } else { lo };
+    let t1 = if hi > k - 1 { k - 1 } else { hi };
+    let mut acc = 0.0;
+    let mut t = t0;
+    while t <= t1 {
+        let a = pos(t - 2); let b = pos(t - 1); let c = pos(t);
+        acc += crw_innov(ctx.km_lon2, ctx.km_lat2, ctx.rho.get(),
+                         a.0, a.1, b.0, b.1, c.0, c.1);
+        t += 1;
+    }
+    acc
+}
+
 // Dense upper Cholesky R (row-major n x n), R^T R = Q.
 fn chol_upper(q: &[f64], n: usize) -> Vec<f64> {
     let mut r = vec![0.0f64; n*n];
@@ -1313,6 +1350,11 @@ struct Ctx<'a> {
     aux_lon0: f64, aux_dlon: f64, aux_ncol: usize,
     aux_lat0: f64, aux_dlat: f64, aux_nrow: usize,
     spherical: bool, km_lon2: f64, km_lat2: f64,   // great-circle movement metric
+    // Directional persistence of the correlated random walk: increments follow
+    // an AR(1), delta_t = rho*delta_{t-1} + eps. rho = 0 is the memoryless
+    // Brownian model and reproduces it exactly. A Cell because rho is resampled
+    // every sweep while the context is borrowed immutably by the movers.
+    rho: std::cell::Cell<f64>,
 }
 impl<'a> Ctx<'a> {
     #[inline]
@@ -1376,6 +1418,13 @@ fn single_site(ctx: &Ctx, xlon: &mut [f64], xlat: &mut [f64], le: &mut [f64], ko
         }
         corr += -e / (2.0 * sig2);
     }
+    if ctx.rho.get() != 0.0 {
+        let sig2 = ctx.km_lon2 / pm[0];
+        let cur = |m: usize| (xlon[m], xlat[m]);
+        let prp = |m: usize| if m == t { (px, py) } else { (xlon[m], xlat[m]) };
+        let e = crw_sum(ctx, prp, k, t, t + 2) - crw_sum(ctx, cur, k, t, t + 2);
+        corr += -e / (2.0 * sig2);
+    }
     if rng.gen::<f64>().ln() < corr { xlon[t] = px; xlat[t] = py; le[t] = le_p; }
 }
 
@@ -1400,14 +1449,22 @@ fn rb_polish(ctx: &Ctx, xlon: &mut [f64], xlat: &mut [f64], le: &mut [f64], koff
                       - mv_edge(ctx.km_lon2, ctx.km_lat2, xlon[t], xlat[t], xlon[t+1], xlat[t+1]);
                 corr += -e / (2.0 * sig2);
             }
+            if ctx.rho.get() != 0.0 {
+                let sig2 = ctx.km_lon2 / pm[0];
+                let cur = |m: usize| (xlon[m], xlat[m]);
+                let prp = |m: usize| if m == t { (px, py) } else { (xlon[m], xlat[m]) };
+                let e = crw_sum(ctx, prp, k, t, t + 2) - crw_sum(ctx, cur, k, t, t + 2);
+                corr += -e / (2.0 * sig2);
+            }
             if rng.gen::<f64>().ln() < corr { xlon[t] = px; xlat[t] = py; le[t] = le_p; }
         }
     }
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn block_update(ctx: &Ctx, xlon: &mut [f64], xlat: &mut [f64], le: &mut [f64], koff: usize,
-                l: usize, r: usize, surr_mu: &[f64], surr_p: &[f64], pm: &[f64; 4],
+                l: usize, r: usize, k: usize, surr_mu: &[f64], surr_p: &[f64], pm: &[f64; 4],
                 rng: &mut StdRng, nrm: &Normal<f64>) -> bool {
     let b_len = r - l + 1;
     let d = 2 * b_len;
@@ -1447,17 +1504,23 @@ fn block_update(ctx: &Ctx, xlon: &mut [f64], xlat: &mut [f64], le: &mut [f64], k
         lep[a] = ctx.emit(gk, px, py);
         corr += (lep[a] - (-0.5*quad2(&pk, px-mkx, py-mky))) - (le[l+a] - (-0.5*quad2(&pk, cx-mkx, cy-mky)));
     }
+    let posp = |m: usize| -> (f64, f64) {
+        if m >= l && m <= r { (prop[2*(m-l)], prop[2*(m-l)+1]) } else { (xlon[m], xlat[m]) }
+    };
     if ctx.spherical {
         let sig2 = ctx.km_lon2 / pm[0];
-        let posp = |m: usize| -> (f64, f64) {
-            if m >= l && m <= r { (prop[2*(m-l)], prop[2*(m-l)+1]) } else { (xlon[m], xlat[m]) }
-        };
         let mut e = 0.0;
         for m in (l-1)..=r {   // affected edges (m, m+1), m = l-1..r
             let (pa, pb) = (posp(m), posp(m + 1));
             e += mv_edge(ctx.km_lon2, ctx.km_lat2, pa.0, pa.1, pb.0, pb.1)
                - mv_edge(ctx.km_lon2, ctx.km_lat2, xlon[m], xlat[m], xlon[m+1], xlat[m+1]);
         }
+        corr += -e / (2.0 * sig2);
+    }
+    if ctx.rho.get() != 0.0 {
+        let sig2 = ctx.km_lon2 / pm[0];
+        let cur = |m: usize| (xlon[m], xlat[m]);
+        let e = crw_sum(ctx, &posp, k, l, r + 2) - crw_sum(ctx, cur, k, l, r + 2);
         corr += -e / (2.0 * sig2);
     }
     if rng.gen::<f64>().ln() < corr {
@@ -1486,7 +1549,7 @@ fn track_update(ctx: &Ctx, xlon: &mut [f64], xlat: &mut [f64], le: &mut [f64], k
         while r < (l + blk_max - 1).min(k - 2) && ctx.obs_len[koff + r + 1] > 0 { r += 1; }
         blk_max = block_len;
         att += 1;
-        if block_update(ctx, xlon, xlat, le, koff, l, r, surr_mu, surr_p, pm, rng, nrm) { acc += 1; }
+        if block_update(ctx, xlon, xlat, le, koff, l, r, k, surr_mu, surr_p, pm, rng, nrm) { acc += 1; }
         l = r + 1;
     }
     if free_end { single_site(ctx, xlon, xlat, le, koff, k - 1, k, pm, rng, nrm); }
@@ -1535,7 +1598,7 @@ fn run_block_track(
         cal: cal_array(&calibration), cal_len: calibration.len().min(4),
         lambda: likelihood_params[0], max_light: likelihood_params[1], prob_slab: likelihood_params[2],
         koff: 0, aux: &[], aux_lon0: 0.0, aux_dlon: 1.0, aux_ncol: 0, aux_lat0: 0.0, aux_dlat: 1.0, aux_nrow: 0,
-        spherical: false, km_lon2: 0.0, km_lat2: 0.0,
+        spherical: false, km_lon2: 0.0, km_lat2: 0.0, rho: std::cell::Cell::new(0.0),
     };
     let informative: Vec<bool> = knot_obs_len.iter().map(|&n| n > 0).collect();
 
@@ -1616,10 +1679,16 @@ fn run_block_track(
 /// @param polish Whether to run the red-black polish each sweep
 /// @param spherical Great-circle movement metric (exp(-gcdist^2/2 sig2)) if TRUE,
 ///   else the flat tangent-plane metric at each tag's reference latitude
+/// @param crw Correlated random walk: model the increments as an AR(1),
+///   delta_t = rho*delta_{t-1} + eps, with a per-tag persistence rho sampled
+///   alongside the movement variance. FALSE gives the memoryless Brownian walk
+///   and is bit-identical to the previous behaviour.
+/// @param rho_prior_sd Standard deviation of the mean-zero normal prior on each
+///   tag's persistence; rho is confined to (-0.99, 0.99)
 /// @param seed RNG seed; 0 means entropy
 /// @return List with beta and sig2 (kept draws), plus per-knot track posterior
 ///   mean_lon/sd_lon/mean_lat/sd_lat (concatenated across individuals, same order
-///   as knots_per_ind)
+///   as knots_per_ind), and rho (per-tag persistence draws, zero when crw is FALSE)
 /// @name run_block_hier
 #[extendr]
 fn run_block_hier(
@@ -1633,7 +1702,8 @@ fn run_block_hier(
     aux_flat: Vec<f64>, aux_ncol: &[i32], aux_nrow: &[i32],   // sensor terms (0 cells => none)
     aux_lon0: Vec<f64>, aux_dlon: Vec<f64>, aux_lat0: Vec<f64>, aux_dlat: Vec<f64>,
     a_pop: f64, g0: f64, h0: f64,
-    block_len: i32, sweeps: i32, burn: i32, thin: i32, polish: bool, spherical: bool, seed: f64,
+    block_len: i32, sweeps: i32, burn: i32, thin: i32, polish: bool, spherical: bool,
+    crw: bool, rho_prior_sd: f64, seed: f64,
 ) -> List {
     let n = n_ind as usize;
     let bl = block_len as usize;
@@ -1673,7 +1743,7 @@ fn run_block_hier(
             koff: koff[i], aux: aslice,
             aux_lon0: aux_lon0[i], aux_dlon: aux_dlon[i], aux_ncol: ancol[i],
             aux_lat0: aux_lat0[i], aux_dlat: aux_dlat[i], aux_nrow: anrow[i],
-            spherical, km_lon2: cinv_i[i][0], km_lat2: cinv_i[i][3],
+            spherical, km_lon2: cinv_i[i][0], km_lat2: cinv_i[i][3], rho: std::cell::Cell::new(0.0),
         }
     }).collect();
 
@@ -1699,10 +1769,15 @@ fn run_block_hier(
         xlon.push(xl); xlat.push(xt); le.push(lei);
     }
     let mut beta = { let s: f64 = sig2.iter().sum(); (s / n as f64) * (a_pop - 1.0) };
+    // Per-tag directional persistence. Zero unless the correlated random walk is
+    // requested, in which case it is sampled each sweep from its conjugate
+    // normal full conditional.
+    let mut rho = vec![0.0f64; n];
 
     let nkeep = ((sweeps - burn + thin - 1) / thin).max(0) as usize;
     let mut beta_draws: Vec<f64> = Vec::with_capacity(nkeep);
     let mut sig2_draws: Vec<f64> = Vec::with_capacity(nkeep * n);
+    let mut rho_draws: Vec<f64> = Vec::with_capacity(nkeep * n);
     let total_knots: usize = ki.iter().sum();
     let (mut tmlon, mut tm2lon) = (vec![0.0; total_knots], vec![0.0; total_knots]);
     let (mut tmlat, mut tm2lat) = (vec![0.0; total_knots], vec![0.0; total_knots]);
@@ -1716,13 +1791,47 @@ fn run_block_hier(
                          &surr_mu, &surr_p, &pm, bl, polish, free_end[i], &mut rng, &nrm);
             // conjugate sig2_i | track ~ InvGamma(a_pop + (k-1), beta + 0.5 SS)
             // SS is sum of squared movement (great-circle when spherical, planar otherwise)
+            // Under the correlated random walk the residual is the INNOVATION
+            // delta_t - rho*delta_{t-1}, not the step itself; the first
+            // increment has no predecessor and enters as-is.
             let mut ss = 0.0;
             for t in 1..k {
-                ss += if spherical { let d = gcdist_km(xlon[i][t-1], xlat[i][t-1], xlon[i][t], xlat[i][t]); d*d }
-                      else { quad2(&cinv_i[i], xlon[i][t]-xlon[i][t-1], xlat[i][t]-xlat[i][t-1]) };
+                let (dx, dy) = (xlon[i][t]-xlon[i][t-1], xlat[i][t]-xlat[i][t-1]);
+                ss += if crw && t >= 2 {
+                    let (px, py) = (xlon[i][t-1]-xlon[i][t-2], xlat[i][t-1]-xlat[i][t-2]);
+                    quad2(&cinv_i[i], dx - rho[i]*px, dy - rho[i]*py)
+                } else if spherical {
+                    let d = gcdist_km(xlon[i][t-1], xlat[i][t-1], xlon[i][t], xlat[i][t]); d*d
+                } else {
+                    quad2(&cinv_i[i], dx, dy)
+                };
             }
             let g = Gamma::new(a_pop + (k as f64 - 1.0), 1.0 / (beta + 0.5*ss)).unwrap();
             sig2[i] = 1.0 / rng.sample(g);
+
+            // rho_i | track, sig2_i is the coefficient of a linear regression of
+            // each increment on the one before it, so it has a conjugate normal
+            // full conditional under a mean-zero normal prior. Confined to
+            // (-0.99, 0.99), beyond which the walk is not stationary.
+            if crw && k >= 3 {
+                let (mut num, mut den) = (0.0, 0.0);
+                for t in 2..k {
+                    let (dx, dy) = (xlon[i][t]-xlon[i][t-1], xlat[i][t]-xlat[i][t-1]);
+                    let (px, py) = (xlon[i][t-1]-xlon[i][t-2], xlat[i][t-1]-xlat[i][t-2]);
+                    num += cinv_i[i][0]*dx*px + cinv_i[i][3]*dy*py;
+                    den += cinv_i[i][0]*px*px + cinv_i[i][3]*py*py;
+                }
+                let prior_prec = if rho_prior_sd > 0.0 { 1.0/(rho_prior_sd*rho_prior_sd) } else { 0.0 };
+                let prec = den / sig2[i] + prior_prec;
+                if prec > 0.0 && den.is_finite() {
+                    let mean = (num / sig2[i]) / prec;
+                    let sd = (1.0 / prec).sqrt();
+                    let mut r = mean + sd * rng.sample(&nrm);
+                    if !r.is_finite() { r = 0.0; }
+                    rho[i] = r.max(-0.99).min(0.99);
+                    ctxs[i].rho.set(rho[i]);
+                }
+            }
         }
         // conjugate beta | . ~ Gamma(g0 + n*a_pop, h0 + sum 1/sig2)
         let inv_sum: f64 = sig2.iter().map(|s| 1.0/s).sum();
@@ -1732,6 +1841,7 @@ fn run_block_hier(
         if sweep >= burn && (sweep - burn) % thin == 0 {
             beta_draws.push(beta);
             for i in 0..n { sig2_draws.push(sig2[i]); }
+            for i in 0..n { rho_draws.push(rho[i]); }
             rec += 1; let inv = 1.0 / rec as f64;
             for i in 0..n { for t in 0..ki[i] {
                 let gk = koff[i] + t;
@@ -1744,7 +1854,7 @@ fn run_block_hier(
     let den = if rec > 1 { (rec - 1) as f64 } else { 1.0 };
     let sdlon: Vec<f64> = tm2lon.iter().map(|v| (v/den).sqrt()).collect();
     let sdlat: Vec<f64> = tm2lat.iter().map(|v| (v/den).sqrt()).collect();
-    list!(beta = beta_draws, sig2 = sig2_draws, n_kept = nk, n_ind = n_ind,
+    list!(beta = beta_draws, sig2 = sig2_draws, rho = rho_draws, n_kept = nk, n_ind = n_ind,
           mean_lon = tmlon, sd_lon = sdlon, mean_lat = tmlat, sd_lat = sdlat)
 }
 

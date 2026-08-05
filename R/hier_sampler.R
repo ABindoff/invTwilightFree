@@ -55,11 +55,23 @@
 #' @param metric Movement metric: "spherical" (default; great-circle, matches the
 #'   grid engine and is correct for wide-ranging or high-latitude tracks) or "flat"
 #'   (tangent plane at each tag's deployment latitude, slightly faster).
+#' @param movement Movement model. \code{"brownian"} (default) treats successive
+#'   steps as independent. \code{"crw"} is a correlated random walk: increments
+#'   follow an AR(1), \eqn{\Delta_t = \rho \Delta_{t-1} + \epsilon}, with a
+#'   per-tag persistence \eqn{\rho} sampled alongside the movement variance. Use
+#'   it for directed movement such as a migration, where a memoryless walk cannot
+#'   match the one-step scale and the net displacement at the same time and
+#'   compromises between them, leaving position intervals too narrow.
+#'   \code{"brownian"} is bit-identical to previous versions.
+#' @param rho_prior_sd Standard deviation of the mean-zero normal prior on each
+#'   tag's persistence (default 0.5); \eqn{\rho} is confined to (-0.99, 0.99).
 #' @param seed Integer RNG seed; \code{NULL} is non-deterministic.
 #' @return An object of class \code{TwilightFreeHier} with elements \code{population}
 #'   (population movement scale posterior, km/day), \code{movement} (per-tag
-#'   movement posterior data frame), \code{tracks} (named list of per-knot location
-#'   posteriors), \code{tags} (per-tag metadata) and \code{draws} (raw sig2/beta).
+#'   movement posterior data frame), \code{persistence} (per-tag \eqn{\rho}
+#'   posterior, \code{NULL} unless \code{movement = "crw"}), \code{tracks} (named
+#'   list of per-knot location posteriors), \code{tags} (per-tag metadata) and
+#'   \code{draws} (raw sig2/beta/rho).
 #' @importFrom stats quantile lm coef rgamma sd
 #' @export
 TwilightFreeHier <- function(data, locations,
@@ -70,9 +82,12 @@ TwilightFreeHier <- function(data, locations,
                              surrogate_diffusion = 100, mesh_pad = 20, coarse_res = 1.5,
                              inflate = 1.5, block_len = 5L,
                              sweeps = 4000L, burn = 1500L, thin = 5L,
-                             polish = TRUE, metric = c("spherical", "flat"), seed = NULL) {
+                             polish = TRUE, metric = c("spherical", "flat"),
+                             movement = c("brownian", "crw"), rho_prior_sd = 0.5,
+                             seed = NULL) {
 
   metric <- match.arg(metric)
+  movement <- match.arg(movement)
   panel <- .tfh_as_list(data, id)
   tags  <- .tfh_resolve_ids(panel, locations)
   n <- length(tags$data)
@@ -104,9 +119,10 @@ TwilightFreeHier <- function(data, locations,
     a_pop, hyperprior[1], hyperprior[2], as.integer(block_len),
     as.integer(sweeps), as.integer(burn), as.integer(thin), isTRUE(polish),
     identical(metric, "spherical"),
+    identical(movement, "crw"), as.numeric(rho_prior_sd),
     as.numeric(if (is.null(seed)) 0 else seed))
 
-  .tfh_assemble(fit, ind, tags, a_pop, step_hours)
+  .tfh_assemble(fit, ind, tags, a_pop, step_hours, movement)
 }
 
 # ---- input normalization -----------------------------------------------------
@@ -324,7 +340,7 @@ TwilightFreeHier <- function(data, locations,
 }
 
 # ---- assemble the result object ----------------------------------------------
-.tfh_assemble <- function(fit, ind, tags, a_pop, step_hours) {
+.tfh_assemble <- function(fit, ind, tags, a_pop, step_hours, movement = "brownian") {
   n <- length(ind); ids <- tags$ids
   dt_day <- step_hours / 24
   kmday <- function(v) sqrt(pmax(v, 0)) / sqrt(dt_day)
@@ -332,7 +348,7 @@ TwilightFreeHier <- function(data, locations,
   pop <- sqrt(pmax(fit$beta, 0) / (a_pop - 1)) / sqrt(dt_day)
   ci <- function(x) c(mean = mean(x), lower = stats::quantile(x, 0.025, names = FALSE),
                       upper = stats::quantile(x, 0.975, names = FALSE))
-  movement <- data.frame(id = ids,
+  movement_df <- data.frame(id = ids,
     sigma_kmday = apply(sig, 2, function(c) mean(kmday(c))),
     lower = apply(sig, 2, function(c) stats::quantile(kmday(c), 0.025, names = FALSE)),
     upper = apply(sig, 2, function(c) stats::quantile(kmday(c), 0.975, names = FALSE)),
@@ -353,8 +369,20 @@ TwilightFreeHier <- function(data, locations,
     n_knots = vapply(ind, function(E) E$K, integer(1)),
     retrieval = vapply(ind, function(E) all(is.finite(E$retrieve)), logical(1)),
     row.names = NULL, stringsAsFactors = FALSE)
-  out <- list(population = ci(pop), movement = movement, tracks = tracks,
-              tags = meta, draws = list(beta = pop, sig2_kmday = kmday(sig)))
+  # Per-tag directional persistence, when the correlated random walk was used.
+  persistence <- NULL
+  if (identical(movement, "crw") && !is.null(fit$rho)) {
+    rr <- matrix(fit$rho, nrow = fit$n_kept, ncol = n, byrow = TRUE)
+    persistence <- data.frame(
+      id = ids, rho = apply(rr, 2, mean),
+      lower = apply(rr, 2, stats::quantile, 0.025, names = FALSE),
+      upper = apply(rr, 2, stats::quantile, 0.975, names = FALSE),
+      row.names = NULL, stringsAsFactors = FALSE)
+  }
+  out <- list(population = ci(pop), movement = movement_df,
+              persistence = persistence, model = movement, tracks = tracks,
+              tags = meta,
+              draws = list(beta = pop, sig2_kmday = kmday(sig), rho = fit$rho))
   class(out) <- "TwilightFreeHier"
   out
 }
@@ -371,6 +399,13 @@ print.TwilightFreeHier <- function(x, ...) {
   m <- x$movement
   for (i in seq_len(nrow(m)))
     cat(sprintf("  %-10s %5.1f [%4.1f, %5.1f]\n", m$id[i], m$sigma_kmday[i], m$lower[i], m$upper[i]))
+  if (!is.null(x$persistence)) {
+    cat("---------------------------------------------\nPer-tag persistence (rho):\n")
+    pp <- x$persistence
+    for (i in seq_len(nrow(pp)))
+      cat(sprintf("  %-10s %5.2f [%5.2f, %5.2f]\n", pp$id[i], pp$rho[i],
+                  pp$lower[i], pp$upper[i]))
+  }
   cat("=============================================\n")
   invisible(x)
 }

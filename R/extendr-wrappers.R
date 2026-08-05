@@ -148,11 +148,17 @@ run_block_track <- function(knot_obs_start, knot_obs_len, obs_times, obs_light, 
 #' @param polish Whether to run the red-black polish each sweep
 #' @param spherical Great-circle movement metric (exp(-gcdist^2/2 sig2)) if TRUE,
 #'   else the flat tangent-plane metric at each tag's reference latitude
+#' @param crw Correlated random walk: model the increments as an AR(1),
+#'   delta_t = rho*delta_{t-1} + eps, with a per-tag persistence rho sampled
+#'   alongside the movement variance. FALSE gives the memoryless Brownian walk
+#'   and is bit-identical to the previous behaviour.
+#' @param rho_prior_sd Standard deviation of the mean-zero normal prior on each
+#'   tag's persistence; rho is confined to (-0.99, 0.99)
 #' @param seed RNG seed; 0 means entropy
 #' @return List with beta and sig2 (kept draws), plus per-knot track posterior
 #'   mean_lon/sd_lon/mean_lat/sd_lat (concatenated across individuals, same order
-#'   as knots_per_ind)
+#'   as knots_per_ind), and rho (per-tag persistence draws, zero when crw is FALSE)
 #' @name run_block_hier
-run_block_hier <- function(n_ind, knots_per_ind, knot_obs_start, knot_obs_len, obs_times, obs_light, cal, lp, surr_mu, surr_p, cinv, start_lon, start_lat, end_lon, end_lat, aux_flat, aux_ncol, aux_nrow, aux_lon0, aux_dlon, aux_lat0, aux_dlat, a_pop, g0, h0, block_len, sweeps, burn, thin, polish, spherical, seed) .Call(wrap__run_block_hier, n_ind, knots_per_ind, knot_obs_start, knot_obs_len, obs_times, obs_light, cal, lp, surr_mu, surr_p, cinv, start_lon, start_lat, end_lon, end_lat, aux_flat, aux_ncol, aux_nrow, aux_lon0, aux_dlon, aux_lat0, aux_dlat, a_pop, g0, h0, block_len, sweeps, burn, thin, polish, spherical, seed)
+run_block_hier <- function(n_ind, knots_per_ind, knot_obs_start, knot_obs_len, obs_times, obs_light, cal, lp, surr_mu, surr_p, cinv, start_lon, start_lat, end_lon, end_lat, aux_flat, aux_ncol, aux_nrow, aux_lon0, aux_dlon, aux_lat0, aux_dlat, a_pop, g0, h0, block_len, sweeps, burn, thin, polish, spherical, crw, rho_prior_sd, seed) .Call(wrap__run_block_hier, n_ind, knots_per_ind, knot_obs_start, knot_obs_len, obs_times, obs_light, cal, lp, surr_mu, surr_p, cinv, start_lon, start_lat, end_lon, end_lat, aux_flat, aux_ncol, aux_nrow, aux_lon0, aux_dlon, aux_lat0, aux_dlat, a_pop, g0, h0, block_len, sweeps, burn, thin, polish, spherical, crw, rho_prior_sd, seed)
 
 # nolint end

@@ -25,6 +25,8 @@ TwilightFreeHier(
   thin = 5L,
   polish = TRUE,
   metric = c("spherical", "flat"),
+  movement = c("brownian", "crw"),
+  rho_prior_sd = 0.5,
   seed = NULL
 )
 }
@@ -92,13 +94,27 @@ needed for unbiased movement-variance estimation).}
 grid engine and is correct for wide-ranging or high-latitude tracks) or "flat"
 (tangent plane at each tag's deployment latitude, slightly faster).}
 
+\item{movement}{Movement model. \code{"brownian"} (default) treats successive
+steps as independent. \code{"crw"} is a correlated random walk: increments
+follow an AR(1), \eqn{\Delta_t = \rho \Delta_{t-1} + \epsilon}, with a
+per-tag persistence \eqn{\rho} sampled alongside the movement variance. Use
+it for directed movement such as a migration, where a memoryless walk cannot
+match the one-step scale and the net displacement at the same time and
+compromises between them, leaving position intervals too narrow.
+\code{"brownian"} is bit-identical to previous versions.}
+
+\item{rho_prior_sd}{Standard deviation of the mean-zero normal prior on each
+tag's persistence (default 0.5); \eqn{\rho} is confined to (-0.99, 0.99).}
+
 \item{seed}{Integer RNG seed; \code{NULL} is non-deterministic.}
 }
 \value{
 An object of class \code{TwilightFreeHier} with elements \code{population}
   (population movement scale posterior, km/day), \code{movement} (per-tag
-  movement posterior data frame), \code{tracks} (named list of per-knot location
-  posteriors), \code{tags} (per-tag metadata) and \code{draws} (raw sig2/beta).
+  movement posterior data frame), \code{persistence} (per-tag \eqn{\rho}
+  posterior, \code{NULL} unless \code{movement = "crw"}), \code{tracks} (named
+  list of per-knot location posteriors), \code{tags} (per-tag metadata) and
+  \code{draws} (raw sig2/beta/rho).
 }
 \description{
 Fits a partial-pooling hierarchical model to a panel of light-logger tracks:
