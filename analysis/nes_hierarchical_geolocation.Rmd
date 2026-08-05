@@ -30,6 +30,7 @@ params:
   apply_clock_correction: TRUE    # ...and shift the timestamps by it (see 3.7)
   clock_hires_minutes: 1      # resolution of the light used for the clock (see 3.7)
   clock_window_days:   3      # days of light around each known fix
+  cal_window_days:    15      # days at the release site used to fit the light response
 
   # ---- ground truth --------------------------------------------------------
   argos_keep_lc: "3,2,1,0,A,B"
@@ -395,7 +396,10 @@ automatic, so it does not reintroduce the manual editing step the method exists
 to remove.
 
 ```{r archives}
-archives <- cache_rds(sprintf("archives_%dmin", params$decimate_minutes), {
+# The cache key carries a format version: this chunk returns a list of
+# (main, ends) pairs, and a cache written by an earlier layout would be read
+# back as NULL for both.
+archives <- cache_rds(sprintf("archives_v2_%dmin", params$decimate_minutes), {
   p <- archive_paths
   if (!is.null(params$max_tags)) p <- utils::head(p, params$max_tags)
   out <- lapply(p, function(f) {
@@ -937,6 +941,85 @@ term_inventory <- do.call(rbind, lapply(names(tags), function(id) {
 term_inventory
 ```
 
+## The tag's light response
+
+The engines model clear-sky light as a clamped linear function of solar zenith
+angle. Where that line sits is a property of the **light channel**, and it is not
+the same for every tag. A logger whose output is linear in irradiance collapses
+within civil twilight, over about 11 degrees of zenith. The Mk9 reports a
+compressed, roughly logarithmic light level whose clear-sky curve declines
+smoothly over about 25 degrees and settles on a non-zero dark reading. Latitude
+is read from that gradient, so assuming the wrong one is a first-order error,
+and archival tags differ in it even within a batch. It is therefore measured per
+tag rather than assumed.
+
+`fit_light_response()` does this at the release site, where the position is
+known, by fitting the **upper envelope** of light against zenith. Shading, cloud
+and depth can only ever reduce the measured light, so the clear-sky curve is the
+top of the point cloud rather than its middle, which is what lets the fit
+survive an animal that is underwater most of the time.
+
+```{r light-response}
+responses <- lapply(tags, function(g) {
+  e <- archive_ends[[g$id]]                       # 1-minute light near both ends
+  k <- e$time <= min(e$time) + params$cal_window_days * 86400
+  if (sum(k) < 500) k <- rep(TRUE, nrow(e))
+  fit_light_response(e$time[k], e$light[k],
+                     lon = g$deploy[["lon"]], lat = g$deploy[["lat"]])
+})
+names(responses) <- names(tags)
+
+resp_table <- do.call(rbind, lapply(names(responses), function(id) {
+  r <- responses[[id]]
+  if (is.null(r)) return(data.frame(id = id, slope = NA_real_, width_deg = NA_real_,
+                                    saturate_at = NA_real_, zero_at = NA_real_,
+                                    dark_level = NA_real_, baseline = NA_real_))
+  data.frame(id = id, slope = round(r$slope, 2), width_deg = round(r$width_deg, 1),
+             saturate_at = round(r$saturate_at, 1), zero_at = round(r$zero_at, 1),
+             dark_level = round(r$dark_level), baseline = round(r$baseline),
+             row.names = NULL)
+}))
+resp_table
+cat(sprintf("\nmedian fitted slope %.2f over a %.0f degree transition\n",
+            stats::median(resp_table$slope, na.rm = TRUE),
+            stats::median(resp_table$width_deg, na.rm = TRUE)))
+cat(sprintf("the old hard-coded default would have been range/11 = %.1f over 11 degrees\n",
+            stats::median(vapply(tags, function(g)
+              as.numeric(diff(stats::quantile(g$light$light, c(.05, .95)))) / 11, 0))))
+```
+
+Two things to read off this table. `width_deg` well above 11 says the channel is
+log-scaled. `dark_level` sits far above `baseline` (the 5th percentile the
+engines subtract) because for a continuously diving animal the 5th percentile is
+a **deep daytime dive**, which is darker than night at the surface. The dark
+level is reported as a diagnostic but deliberately not used as the baseline:
+subtracting it clips every deep observation to zero and destroys the gradient
+that carries the signal.
+
+```{r response-plot, fig.height = 4.5}
+op <- par(mar = c(4.2, 4.2, 2.4, 0.8))
+zz <- seq(40, 130, by = 0.5)
+ymax <- max(vapply(responses, function(r) if (is.null(r)) 0 else r$dark_level + r$amp, 0))
+plot(NA, xlim = c(40, 130), ylim = c(0, ymax * 1.05),
+     xlab = "solar zenith angle (degrees)", ylab = "light (tag units)",
+     main = "Fitted clear-sky response, all tags")
+for (id in names(responses)) {
+  r <- responses[[id]]; if (is.null(r)) next
+  lines(r$envelope$zenith, r$envelope$light, col = "#95a5a655")
+  lines(zz, pmin(pmax(r$calibration[1] - r$calibration[2] * zz, 0), r$max_light) + r$baseline,
+        col = "#c0392b", lwd = 1.2)
+}
+g1 <- tags[[1]]
+rng1 <- as.numeric(diff(stats::quantile(g1$light$light, c(.05, .95))))
+q051 <- as.numeric(stats::quantile(g1$light$light, .05))
+lines(zz, pmin(pmax(rng1 / 11 * 96 - rng1 / 11 * zz, 0), rng1) + q051,
+      col = "#2980b9", lwd = 2, lty = 2)
+legend("bottomleft", c("measured envelope", "fitted response", "old hard-coded default"),
+       col = c("#95a5a6", "#c0392b", "#2980b9"), lwd = c(1, 1.2, 2),
+       lty = c(1, 1, 2), bty = "n", cex = 0.9)
+par(op)
+```
+
 ## The surrogate mesh
 
 `TwilightFreeHier()` proposes from a coarse grid-HMM smoother on an internal
@@ -987,9 +1070,23 @@ cat(sprintf("grid HMM: %d x %d = %d cells at %.1f degrees\n",
 ## Panel inputs
 
 ```{r panel}
+# Every engine gets that tag's fitted response, so none falls back to the
+# hard-coded one. Light is baselined with the fitted baseline (the 5th
+# percentile), not the fitted dark level: see 5.2.
+tag_light <- function(g) {
+  r <- responses[[g$id]]
+  base <- if (is.null(r)) as.numeric(stats::quantile(g$light$light, .05)) else r$baseline
+  pmax(0, g$light$light - base)
+}
+tag_cal <- function(g) { r <- responses[[g$id]]; if (is.null(r)) NULL else r$calibration }
+tag_lp  <- function(g) {
+  r <- responses[[g$id]]
+  if (is.null(r)) NULL else c(1 / (r$max_light * 0.5), r$max_light, 0.10)
+}
+
 panel <- function(tg) list(
   data = stats::setNames(lapply(tg, function(g)
-    data.frame(Date = g$light$time, Light = g$light$light)), names(tg)),
+    data.frame(Date = g$light$time, Light = tag_light(g))), names(tg)),
   locations = data.frame(
     id = names(tg),
     deploy_lon   = vapply(tg, function(g) unname(g$deploy[["lon"]]), 0),
@@ -1006,8 +1103,23 @@ P$locations
 ## Hierarchical batches
 
 ```{r hier}
+# TwilightFreeHier applies one calibration across the panel, so the per-tag
+# responses are pooled by their median. They agree closely here (one tag model),
+# and the spread is in the table in section 5.2.
+cal_panel <- {
+  ok <- Filter(Negate(is.null), responses)
+  c(stats::median(vapply(ok, function(r) r$calibration[1], 0)),
+    stats::median(vapply(ok, function(r) r$calibration[2], 0)))
+}
+lp_panel <- {
+  ok <- Filter(Negate(is.null), responses)
+  m <- stats::median(vapply(ok, function(r) r$max_light, 0))
+  c(1 / (m * 0.5), m, 0.10)
+}
+
 fit_hier <- function(pp, terms) timed(TwilightFreeHier(
   data = pp$data, locations = pp$locations, terms = terms,
+  calibration = cal_panel, likelihood_params = lp_panel,
   step_hours = params$step_hours, coarse_res = params$coarse_res, mesh_pad = pad,
   surrogate_diffusion = params$surrogate_diffusion,
   sweeps = as.integer(params$sweeps), burn = as.integer(params$burn),
@@ -1033,13 +1145,14 @@ coastline never has its light likelihood evaluated at all.
 fit_grid_one <- function(id, terms) {
   g <- tags[[id]]
   invisible(capture.output(
-    f <- TwilightFreeGrid(g$light$time, g$light$light, grid = grid,
+    f <- TwilightFreeGrid(g$light$time, tag_light(g), grid = grid,
                           start_lon = unname(g$deploy[["lon"]]),
                           start_lat = unname(g$deploy[["lat"]]),
                           end_lon   = unname(g$recover[["lon"]]),
                           end_lat   = unname(g$recover[["lat"]]),
                           step_hours = params$step_hours,
-                          diffusion = params$grid_diffusion, terms = terms)))
+                          diffusion = params$grid_diffusion, terms = terms,
+                          calibration = tag_cal(g), likelihood_params = tag_lp(g))))
   # Keep only what the comparison needs: the full posterior is K x n doubles.
   list(time = f$fit$time, lon = f$fit$lon, lat = f$fit$lat, log_z = f$log_z)
 }
@@ -1083,7 +1196,8 @@ terra::values(smc_domain) <- 1
 
 run_ffbs <- function(id, terms) {
   g <- tags[[id]]
-  TwilightFreeSMC(date_time = g$light$time, light = g$light$light,
+  TwilightFreeSMC(date_time = g$light$time, light = tag_light(g),
+    calibration = tag_cal(g), likelihood_params = tag_lp(g),
     n_particles = as.integer(params$ffbs_particles),
     start_lon = unname(g$deploy[["lon"]]),  start_lat = unname(g$deploy[["lat"]]),
     end_lon   = unname(g$recover[["lon"]]), end_lat   = unname(g$recover[["lat"]]),
