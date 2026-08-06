@@ -18,6 +18,12 @@
 #' @param trans_prob Optional transition probability matrix (flattened) for behavioral states. Defaults to 0.9 diagonal if multiple diffusions are provided.
 #' @param calibration Calibration parameters c(intercept, slope) mapping zenith to light. If NULL, auto-calibrates from data.
 #' @param likelihood_params Likelihood parameters c(lambda, max_light, prob_slab). If NULL, auto-calibrates from data.
+#' @param shade_ratio Ratio of the spike's upper-arm decay rate to its shading
+#'   (lower-arm) rate. The default `2` reproduces the historical fixed ratio.
+#'   The shading arm decides how cheaply the model can explain light far below
+#'   the clear-sky expectation, so a value below 1 suits a continuously diving
+#'   animal, whose record is mostly attenuated; a larger value makes shading
+#'   more surprising.
 #' @param spatial_mask Optional `RasterLayer` (from the `raster` package) used to constrain particles to valid habitat (e.g. sea vs land). Cells with value 0 (or `NA`) are treated as impassable. If `NULL`, no spatial constraint is applied.
 #' @param seed Integer seed for reproducibility; if `NULL` the engine is non-deterministic. Pass the same integer to reproduce identical tracks. Note that `TwilightFreeGrid` uses a deterministic HMM and needs no seed.
 #' @param terms Optional list of `location_term()` objects (priors, SST, bathymetry, masks). Each contributes an additive log-likelihood evaluated on a spatial raster that is combined with the light likelihood per particle. Defaults to `list()` (light only).
@@ -47,6 +53,7 @@ TwilightFreeSMC <- function(date_time, light,
                            trans_prob = NULL,
                            calibration = NULL,
                            likelihood_params = NULL,
+                           shade_ratio = 2,
                            spatial_mask = NULL,
                            seed = NULL,
                            terms = list(),
@@ -244,6 +251,7 @@ TwilightFreeSMC <- function(date_time, light,
     trans_prob = as.numeric(trans_prob),
     calibration = as.numeric(calibration),
     likelihood_params = as.numeric(likelihood_params),
+    shade_ratio = as.numeric(shade_ratio),
     mask_matrix = m_mat,
     mask_extent = m_ext,
     mask_nrow = m_nrow,

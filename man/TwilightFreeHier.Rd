@@ -13,6 +13,7 @@ TwilightFreeHier(
   step_hours = 12,
   calibration = NULL,
   likelihood_params = NULL,
+  shade_ratio = 2,
   a_pop = 3,
   hyperprior = c(0.001, 0.001),
   surrogate_diffusion = 100,
@@ -64,6 +65,13 @@ deployment location.}
 
 \item{likelihood_params}{Optional \code{c(lambda, max_light, prob_slab)}; if
 \code{NULL} it is derived per tag from the light range.}
+
+\item{shade_ratio}{Ratio of the spike's upper-arm decay rate to its shading
+(lower-arm) rate. The default `2` reproduces the historical fixed ratio.
+The shading arm decides how cheaply the model can explain light far below
+the clear-sky expectation, so a value below 1 suits a continuously diving
+animal, whose record is mostly attenuated; a larger value makes shading
+more surprising.}
 
 \item{a_pop}{Fixed inverse-gamma shape for the per-tag movement variance (default 3).}
 

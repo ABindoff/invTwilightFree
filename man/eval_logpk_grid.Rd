@@ -10,7 +10,8 @@ eval_logpk_grid(
   unix_times,
   obs_light,
   calibration,
-  likelihood_params
+  likelihood_params,
+  shade_ratio
 )
 }
 \arguments{

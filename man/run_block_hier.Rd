@@ -39,6 +39,7 @@ run_block_hier(
   crw,
   rho_prior_sd,
   rho_max,
+  shade_ratio,
   seed
 )
 }

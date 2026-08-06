@@ -8,7 +8,7 @@ test_that("the normalised spike-and-slab density integrates to 1 across mu", {
   Lg <- seq(0, maxl, length.out = 4001)
   dens_integral <- function(mu) {
     d <- exp(vapply(Lg, function(L)
-      light_log_likelihood(L, mu, lambda, maxl, pslab), numeric(1)))
+      light_log_likelihood(L, mu, lambda, maxl, pslab, 2), numeric(1)))
     sum((d[-1] + d[-length(d)]) / 2 * diff(Lg))         # trapezoid
   }
   for (mu in c(5, 20, 40, 60)) {                         # interior and near both clamps
@@ -22,7 +22,7 @@ test_that("the density is a proper mixture for the extreme expected values too",
   Lg <- seq(0, maxl, length.out = 4001)
   for (mu in c(0, maxl)) {                               # fully dark / fully lit cells
     d <- exp(vapply(Lg, function(L)
-      light_log_likelihood(L, mu, lambda, maxl, pslab), numeric(1)))
+      light_log_likelihood(L, mu, lambda, maxl, pslab, 2), numeric(1)))
     integral <- sum((d[-1] + d[-length(d)]) / 2 * diff(Lg))
     expect_equal(integral, 1, tolerance = 0.02)
   }

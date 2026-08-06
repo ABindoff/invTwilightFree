@@ -22,8 +22,10 @@ solar_zenith <- function(unix_time, lon, lat) .Call(wrap__solar_zenith, unix_tim
 #' @param lambda Decay rate for the shading exponential distribution
 #' @param max_light Maximum possible light value for the tag
 #' @param prob_slab Probability of a false light event (the slab)
+#' @param shade_ratio Ratio of the upper-arm decay rate to the shading rate
+#'   (2 is the historical fixed value)
 #' @export
-light_log_likelihood <- function(obs_light, expected_light, lambda, max_light, prob_slab) .Call(wrap__light_log_likelihood, obs_light, expected_light, lambda, max_light, prob_slab)
+light_log_likelihood <- function(obs_light, expected_light, lambda, max_light, prob_slab, shade_ratio) .Call(wrap__light_log_likelihood, obs_light, expected_light, lambda, max_light, prob_slab, shade_ratio)
 
 #' Run the Particle Filter Engine
 #' 
@@ -44,6 +46,11 @@ light_log_likelihood <- function(obs_light, expected_light, lambda, max_light, p
 #'   model, or `c(floor, amp, z50, scale)` for the logistic model (see details in
 #'   `fit_light_response`). Length selects the model.
 #' @param likelihood_params c(lambda, max_light, prob_slab)
+#' @param shade_ratio Ratio of the upper-arm decay rate to the shading rate,
+#'   i.e. lam_hi / lam_lo. 2 reproduces the previous fixed behaviour. Values
+#'   below 1 make the shading tail heavier, which is what a continuously
+#'   diving animal needs: most of its record is far below the clear-sky
+#'   expectation and should be cheap to explain.
 #' @param mask_matrix Flattened spatial mask matrix (0 = impassable); empty for no mask
 #' @param mask_extent c(xmin, xmax, ymin, ymax) extent of the mask raster
 #' @param mask_nrow Number of rows in the mask raster
@@ -62,7 +69,7 @@ light_log_likelihood <- function(obs_light, expected_light, lambda, max_light, p
 #'   heuristic. Default 0.1 (10x tighter).
 #' @name run_particle_filter
 #' @export
-run_particle_filter <- function(unix_times, obs_light, n_particles, start_lat, start_lon, end_lat, end_lon, method, step_hours, diffusion, trans_prob, calibration, likelihood_params, mask_matrix, mask_extent, mask_nrow, mask_ncol, seed, aux_logl_flat, aux_extent, aux_nrow, aux_ncol, flat_light_threshold, flat_light_scale) .Call(wrap__run_particle_filter, unix_times, obs_light, n_particles, start_lat, start_lon, end_lat, end_lon, method, step_hours, diffusion, trans_prob, calibration, likelihood_params, mask_matrix, mask_extent, mask_nrow, mask_ncol, seed, aux_logl_flat, aux_extent, aux_nrow, aux_ncol, flat_light_threshold, flat_light_scale)
+run_particle_filter <- function(unix_times, obs_light, n_particles, start_lat, start_lon, end_lat, end_lon, method, step_hours, diffusion, trans_prob, calibration, likelihood_params, shade_ratio, mask_matrix, mask_extent, mask_nrow, mask_ncol, seed, aux_logl_flat, aux_extent, aux_nrow, aux_ncol, flat_light_threshold, flat_light_scale) .Call(wrap__run_particle_filter, unix_times, obs_light, n_particles, start_lat, start_lon, end_lat, end_lon, method, step_hours, diffusion, trans_prob, calibration, likelihood_params, shade_ratio, mask_matrix, mask_extent, mask_nrow, mask_ncol, seed, aux_logl_flat, aux_extent, aux_nrow, aux_ncol, flat_light_threshold, flat_light_scale)
 
 #' Evaluate the spike-and-slab log-likelihood over a grid of locations
 #'
@@ -81,9 +88,9 @@ run_particle_filter <- function(unix_times, obs_light, n_particles, start_lat, s
 #' @return Numeric vector of log-likelihoods, one per grid cell
 #' @name eval_logpk_grid
 #' @export
-eval_logpk_grid <- function(lon, lat, unix_times, obs_light, calibration, likelihood_params) .Call(wrap__eval_logpk_grid, lon, lat, unix_times, obs_light, calibration, likelihood_params)
+eval_logpk_grid <- function(lon, lat, unix_times, obs_light, calibration, likelihood_params, shade_ratio) .Call(wrap__eval_logpk_grid, lon, lat, unix_times, obs_light, calibration, likelihood_params, shade_ratio)
 
-run_grid_hmm <- function(lon, lat, knot_times, obs_times, obs_light, fixed_idx, fixed_lon, fixed_lat, diffusion, trans_prob, calibration, likelihood_params, aux_logl) .Call(wrap__run_grid_hmm, lon, lat, knot_times, obs_times, obs_light, fixed_idx, fixed_lon, fixed_lat, diffusion, trans_prob, calibration, likelihood_params, aux_logl)
+run_grid_hmm <- function(lon, lat, knot_times, obs_times, obs_light, fixed_idx, fixed_lon, fixed_lat, diffusion, trans_prob, calibration, likelihood_params, shade_ratio, aux_logl) .Call(wrap__run_grid_hmm, lon, lat, knot_times, obs_times, obs_light, fixed_idx, fixed_lon, fixed_lat, diffusion, trans_prob, calibration, likelihood_params, shade_ratio, aux_logl)
 
 #' Run the native single-track block + polish sampler.
 #'
@@ -162,6 +169,6 @@ run_block_track <- function(knot_obs_start, knot_obs_len, obs_times, obs_light, 
 #'   mean_lon/sd_lon/mean_lat/sd_lat (concatenated across individuals, same order
 #'   as knots_per_ind), and rho (per-tag persistence draws, zero when crw is FALSE)
 #' @name run_block_hier
-run_block_hier <- function(n_ind, knots_per_ind, knot_obs_start, knot_obs_len, obs_times, obs_light, cal, lp, surr_mu, surr_p, cinv, start_lon, start_lat, end_lon, end_lat, aux_flat, aux_ncol, aux_nrow, aux_lon0, aux_dlon, aux_lat0, aux_dlat, a_pop, g0, h0, block_len, sweeps, burn, thin, polish, spherical, crw, rho_prior_sd, rho_max, seed) .Call(wrap__run_block_hier, n_ind, knots_per_ind, knot_obs_start, knot_obs_len, obs_times, obs_light, cal, lp, surr_mu, surr_p, cinv, start_lon, start_lat, end_lon, end_lat, aux_flat, aux_ncol, aux_nrow, aux_lon0, aux_dlon, aux_lat0, aux_dlat, a_pop, g0, h0, block_len, sweeps, burn, thin, polish, spherical, crw, rho_prior_sd, rho_max, seed)
+run_block_hier <- function(n_ind, knots_per_ind, knot_obs_start, knot_obs_len, obs_times, obs_light, cal, lp, surr_mu, surr_p, cinv, start_lon, start_lat, end_lon, end_lat, aux_flat, aux_ncol, aux_nrow, aux_lon0, aux_dlon, aux_lat0, aux_dlat, a_pop, g0, h0, block_len, sweeps, burn, thin, polish, spherical, crw, rho_prior_sd, rho_max, shade_ratio, seed) .Call(wrap__run_block_hier, n_ind, knots_per_ind, knot_obs_start, knot_obs_len, obs_times, obs_light, cal, lp, surr_mu, surr_p, cinv, start_lon, start_lat, end_lon, end_lat, aux_flat, aux_ncol, aux_nrow, aux_lon0, aux_dlon, aux_lat0, aux_dlat, a_pop, g0, h0, block_len, sweeps, burn, thin, polish, spherical, crw, rho_prior_sd, rho_max, shade_ratio, seed)
 
 # nolint end

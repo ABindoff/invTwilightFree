@@ -62,10 +62,10 @@ fn solar_zenith(unix_time: &[f64], lon: &[f64], lat: &[f64]) -> Vec<f64> {
 /// by latitude and biases the latitude posterior. Confirmed by SBC; see
 /// notes/topology/sbc_design.md.
 #[inline]
-fn spike_normaliser(mu: f64, lambda: f64, max_light: f64) -> f64 {
-    let lo = 1.0 - (-lambda * mu).exp();                              // mass below mu
-    let hi = 0.5 * (1.0 - (-2.0 * lambda * (max_light - mu)).exp());  // mass above mu
-    (lo + hi).max(1e-12)
+fn spike_normaliser(mu: f64, lam_lo: f64, lam_hi: f64, max_light: f64) -> f64 {
+    let lo = (1.0 - (-lam_lo * mu).exp()) / lam_lo;                // mass below mu
+    let hi = (1.0 - (-lam_hi * (max_light - mu)).exp()) / lam_hi;  // mass above mu
+    ((lo + hi) * lam_lo).max(1e-12)
 }
 
 /// Standard normal CDF, Abramowitz & Stegun 7.1.26 (|error| < 1.5e-7).
@@ -123,6 +123,13 @@ fn rnorm_trunc(mean: f64, sd: f64, lo: f64, hi: f64, rng: &mut StdRng) -> f64 {
     (mean + sd * norm_ppf(p)).max(lo).min(hi)
 }
 
+/// Upper-arm rate from the shading rate and the ratio. A non-positive or
+/// non-finite ratio falls back to 2, which is the historical behaviour.
+#[inline]
+fn upper_rate(lam_lo: f64, shade_ratio: f64) -> f64 {
+    if shade_ratio.is_finite() && shade_ratio > 0.0 { lam_lo * shade_ratio } else { 2.0 * lam_lo }
+}
+
 /// Copy a calibration slice into a fixed-size array so `Ctx` needs no lifetime
 /// for it. Anything beyond the first four entries is ignored.
 #[inline]
@@ -165,16 +172,22 @@ fn expected_light(z: f64, calibration: &[f64], max_light: f64) -> f64 {
 
 /// Asymmetric-exponential spike density for the spike-and-slab light model,
 /// normalised over [0, max_light]. obs <= expected: one-sided exponential
-/// (shading); obs > expected: penalised with twice the decay rate (sensor
-/// physics forbid observations brighter than the clear-sky maximum).
+/// (shading) at rate `lam_lo`; obs > expected: penalised at rate `lam_hi`
+/// (sensor physics forbid observations brighter than the clear-sky maximum).
+///
+/// The two rates were formerly locked at `lam_hi = 2 * lam_lo`. They are now
+/// independent because the SHADING arm's tail decides how cheaply the model can
+/// explain light far below the clear-sky expectation, and for a continuously
+/// diving animal most of the record is exactly that. `shade_ratio` in the
+/// engines sets `lam_hi / lam_lo`, defaulting to 2 for the previous behaviour.
 #[inline]
-fn spike_density(obs: f64, expected: f64, lambda: f64, max_light: f64) -> f64 {
+fn spike_density(obs: f64, expected: f64, lam_lo: f64, lam_hi: f64, max_light: f64) -> f64 {
     let raw = if obs <= expected {
-        lambda * (-lambda * (expected - obs)).exp()
+        lam_lo * (-lam_lo * (expected - obs)).exp()
     } else {
-        lambda * (-lambda * 2.0 * (obs - expected)).exp()
+        lam_lo * (-lam_hi * (obs - expected)).exp()
     };
-    raw / spike_normaliser(expected, lambda, max_light)
+    raw / spike_normaliser(expected, lam_lo, lam_hi, max_light)
 }
 
 /// Calculate the log-likelihood of observed light given proposed tracks.
@@ -185,6 +198,8 @@ fn spike_density(obs: f64, expected: f64, lambda: f64, max_light: f64) -> f64 {
 /// @param lambda Decay rate for the shading exponential distribution
 /// @param max_light Maximum possible light value for the tag
 /// @param prob_slab Probability of a false light event (the slab)
+/// @param shade_ratio Ratio of the upper-arm decay rate to the shading rate
+///   (2 is the historical fixed value)
 /// @export
 #[extendr]
 fn light_log_likelihood(
@@ -193,7 +208,9 @@ fn light_log_likelihood(
     lambda: f64,
     max_light: f64,
     prob_slab: f64,
+    shade_ratio: f64,
 ) -> f64 {
+    let lam_hi = upper_rate(lambda, shade_ratio);
     let mut log_lik = 0.0;
     
     // Density of the slab (uniform distribution over possible light values)
@@ -203,7 +220,7 @@ fn light_log_likelihood(
         let obs = obs_light[i];
         let exp = expected_light[i];
         
-        let spike = spike_density(obs, exp, lambda, max_light);
+        let spike = spike_density(obs, exp, lambda, lam_hi, max_light);
 
         // Mixture model: (1 - pi) * True Light + pi * False Light
         let marginal_density = (1.0 - prob_slab) * spike + prob_slab * slab_density;
@@ -292,6 +309,11 @@ fn interpolate_lon(lon1: f64, lon2: f64, f: f64) -> f64 {
 ///   model, or `c(floor, amp, z50, scale)` for the logistic model (see details in
 ///   `fit_light_response`). Length selects the model.
 /// @param likelihood_params c(lambda, max_light, prob_slab)
+/// @param shade_ratio Ratio of the upper-arm decay rate to the shading rate,
+///   i.e. lam_hi / lam_lo. 2 reproduces the previous fixed behaviour. Values
+///   below 1 make the shading tail heavier, which is what a continuously
+///   diving animal needs: most of its record is far below the clear-sky
+///   expectation and should be cheap to explain.
 /// @param mask_matrix Flattened spatial mask matrix (0 = impassable); empty for no mask
 /// @param mask_extent c(xmin, xmax, ymin, ymax) extent of the mask raster
 /// @param mask_nrow Number of rows in the mask raster
@@ -325,6 +347,7 @@ fn run_particle_filter(
     trans_prob: Vec<f64>,
     calibration: Vec<f64>,
     likelihood_params: Vec<f64>,
+    shade_ratio: f64,
     mask_matrix: Vec<f64>,
     mask_extent: Vec<f64>,
     mask_nrow: i32,
@@ -340,6 +363,7 @@ fn run_particle_filter(
     let n = n_particles as usize;
     let num_obs = unix_times.len();
     let lambda = likelihood_params[0];
+    let lam_hi = upper_rate(lambda, shade_ratio);
     let max_light = likelihood_params[1];
     let prob_slab = if likelihood_params.len() > 2 { likelihood_params[2] } else { 0.05 };
     let use_hyperprior = likelihood_params.len() >= 4;
@@ -529,7 +553,7 @@ fn run_particle_filter(
                 let zenith = zenith_from_ephem(eph_sd[j], eph_cd[j], eph_ra[j], eph_gmst[j], p_lon, p_lat);
                 let expected = expected_light(zenith, &calibration, max_light);
                 let obs = obs_light[j];
-                let spike = spike_density(obs, expected, lambda, max_light);
+                let spike = spike_density(obs, expected, lambda, lam_hi, max_light);
                 let current_prob_slab = particles[i].prob_slab;
                 let den = (1.0 - current_prob_slab) * spike + current_prob_slab * slab_density;
                 log_lik += den.ln();
@@ -811,7 +835,7 @@ fn run_particle_filter(
             
             let exp = expected_light(z, &calibration, max_light);
             let obs = obs_light[j];
-            let spike = spike_density(obs, exp, lambda, max_light);
+            let spike = spike_density(obs, exp, lambda, lam_hi, max_light);
             let den = (1.0 - current_prob_slab) * spike + current_prob_slab * slab_density;
             let prob_f = (current_prob_slab * slab_density) / den;
             p_false += prob_f * w;
@@ -863,11 +887,13 @@ fn eval_logpk_grid(
     unix_times: &[f64],
     obs_light: &[f64],
     calibration: Vec<f64>,
-    likelihood_params: Vec<f64>
+    likelihood_params: Vec<f64>,
+    shade_ratio: f64
 ) -> Vec<f64> {
     let n = lon.len();
     let num_obs = unix_times.len();
     let lambda = likelihood_params[0];
+    let lam_hi = upper_rate(lambda, shade_ratio);
     let max_light = likelihood_params[1];
     let prob_slab = if likelihood_params.len() > 3 {
         let alpha = likelihood_params[2];
@@ -891,7 +917,7 @@ fn eval_logpk_grid(
             let zenith = zenith_from_ephem(sd, cd, ra, gmst, lon[i], lat[i]);
             let expected = expected_light(zenith, &calibration, max_light);
             let obs = obs_light[j];
-            let spike = spike_density(obs, expected, lambda, max_light);
+            let spike = spike_density(obs, expected, lambda, lam_hi, max_light);
             let den = (1.0 - prob_slab) * spike + prob_slab * slab_density;
             sum_logl += den.ln();
         }
@@ -915,6 +941,7 @@ fn run_grid_hmm(
     trans_prob: Vec<f64>,
     calibration: Vec<f64>,
     likelihood_params: Vec<f64>,
+    shade_ratio: f64,
     aux_logl: Vec<f64>,
 ) -> List {
     let n = lon.len();
@@ -922,6 +949,7 @@ fn run_grid_hmm(
     let k_steps = knot_times.len();
     
     let lambda = likelihood_params[0];
+    let lam_hi = upper_rate(lambda, shade_ratio);
     let max_light = likelihood_params[1];
     let prob_slab = if likelihood_params.len() > 3 {
         let alpha = likelihood_params[2];
@@ -979,7 +1007,7 @@ fn run_grid_hmm(
                 let zenith = zenith_from_ephem(sd, cd, ra, gmst, lon[i], lat[i]);
                 let expected = expected_light(zenith, &calibration, max_light);
                 let obs = obs_light[j];
-                let spike = spike_density(obs, expected, lambda, max_light);
+                let spike = spike_density(obs, expected, lambda, lam_hi, max_light);
                 let den = (1.0 - prob_slab) * spike + prob_slab * slab_density;
                 sum_logl += den.ln();
             }
@@ -1399,7 +1427,7 @@ struct Ctx<'a> {
     // Response parameters, length 2 (clamped linear) or 4 (logistic); see
     // expected_light(). Carried as a fixed array so Ctx stays Copy-cheap.
     cal: [f64; 4], cal_len: usize,
-    lambda: f64, max_light: f64, prob_slab: f64,
+    lambda: f64, lam_hi: f64, max_light: f64, prob_slab: f64,
     koff: usize,
     aux: &'a [f64],       // this tag's K*ncell aux values (empty if no terms)
     aux_lon0: f64, aux_dlon: f64, aux_ncol: usize,
@@ -1438,7 +1466,7 @@ impl<'a> Ctx<'a> {
             let (sd, cd, ra, gmst) = self.eph[j];
             let z = zenith_from_ephem(sd, cd, ra, gmst, lon, lat);
             let expc = expected_light(z, &self.cal[..self.cal_len], self.max_light);
-            let spike = spike_density(self.obs_light[j], expc, self.lambda, self.max_light);
+            let spike = spike_density(self.obs_light[j], expc, self.lambda, self.lam_hi, self.max_light);
             ll += ((1.0 - self.prob_slab)*spike + self.prob_slab*slab).ln();
         }
         ll
@@ -1651,7 +1679,10 @@ fn run_block_track(
     let ctx = Ctx {
         obs_start: knot_obs_start, obs_len: knot_obs_len, obs_light: &obs_light, eph: &eph,
         cal: cal_array(&calibration), cal_len: calibration.len().min(4),
-        lambda: likelihood_params[0], max_light: likelihood_params[1], prob_slab: likelihood_params[2],
+        // run_block_track is the internal single-track A-B kernel and keeps the
+        // historical 2:1 arm ratio; the ratio is exposed on the public engines.
+        lambda: likelihood_params[0], lam_hi: upper_rate(likelihood_params[0], 2.0),
+        max_light: likelihood_params[1], prob_slab: likelihood_params[2],
         koff: 0, aux: &[], aux_lon0: 0.0, aux_dlon: 1.0, aux_ncol: 0, aux_lat0: 0.0, aux_dlat: 1.0, aux_nrow: 0,
         spherical: false, km_lon2: 0.0, km_lat2: 0.0, rho: std::cell::Cell::new(0.0),
     };
@@ -1761,7 +1792,7 @@ fn run_block_hier(
     aux_lon0: Vec<f64>, aux_dlon: Vec<f64>, aux_lat0: Vec<f64>, aux_dlat: Vec<f64>,
     a_pop: f64, g0: f64, h0: f64,
     block_len: i32, sweeps: i32, burn: i32, thin: i32, polish: bool, spherical: bool,
-    crw: bool, rho_prior_sd: f64, rho_max: f64, seed: f64,
+    crw: bool, rho_prior_sd: f64, rho_max: f64, shade_ratio: f64, seed: f64,
 ) -> List {
     let n = n_ind as usize;
     let bl = block_len as usize;
@@ -1797,7 +1828,8 @@ fn run_block_hier(
         Ctx {
             obs_start: knot_obs_start, obs_len: knot_obs_len, obs_light: &obs_light, eph: &eph,
             cal: cal_array(&cal[cal_stride*i .. cal_stride*(i+1)]), cal_len: cal_stride,
-            lambda: lp[3*i], max_light: lp[3*i+1], prob_slab: lp[3*i+2],
+            lambda: lp[3*i], lam_hi: upper_rate(lp[3*i], shade_ratio),
+            max_light: lp[3*i+1], prob_slab: lp[3*i+2],
             koff: koff[i], aux: aslice,
             aux_lon0: aux_lon0[i], aux_dlon: aux_dlon[i], aux_ncol: ancol[i],
             aux_lat0: aux_lat0[i], aux_dlat: aux_dlat[i], aux_nrow: anrow[i],

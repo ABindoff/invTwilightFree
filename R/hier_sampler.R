@@ -35,6 +35,12 @@
 #'   deployment location.
 #' @param likelihood_params Optional \code{c(lambda, max_light, prob_slab)}; if
 #'   \code{NULL} it is derived per tag from the light range.
+#' @param shade_ratio Ratio of the spike's upper-arm decay rate to its shading
+#'   (lower-arm) rate. The default `2` reproduces the historical fixed ratio.
+#'   The shading arm decides how cheaply the model can explain light far below
+#'   the clear-sky expectation, so a value below 1 suits a continuously diving
+#'   animal, whose record is mostly attenuated; a larger value makes shading
+#'   more surprising.
 #' @param a_pop Fixed inverse-gamma shape for the per-tag movement variance (default 3).
 #' @param hyperprior \code{c(g0, h0)} gamma hyperprior on the population scale beta
 #'   (default vague \code{c(1e-3, 1e-3)}; movement variance is in km^2).
@@ -82,6 +88,7 @@ TwilightFreeHier <- function(data, locations,
                              columns = NULL, id = "id", terms = NULL,
                              step_hours = 12,
                              calibration = NULL, likelihood_params = NULL,
+                             shade_ratio = 2,
                              a_pop = 3, hyperprior = c(1e-3, 1e-3),
                              surrogate_diffusion = 100, mesh_pad = 20, coarse_res = 1.5,
                              inflate = 1.5, block_len = 5L,
@@ -110,7 +117,7 @@ TwilightFreeHier <- function(data, locations,
     tg <- .tfh_terms(terms, tags$ids[i], df)
     ind[[i]] <- .tfh_build_individual(tm, lt, loc, step_hours, calibration,
                                       likelihood_params, surrogate_diffusion,
-                                      mesh_pad, coarse_res, inflate, tg)
+                                      mesh_pad, coarse_res, inflate, tg, shade_ratio)
   }
 
   # ---- flatten to the global arrays the Rust kernel expects ----
@@ -124,6 +131,7 @@ TwilightFreeHier <- function(data, locations,
     as.integer(sweeps), as.integer(burn), as.integer(thin), isTRUE(polish),
     identical(metric, "spherical"),
     identical(movement, "crw"), as.numeric(rho_prior_sd), as.numeric(rho_max),
+    as.numeric(shade_ratio),
     as.numeric(if (is.null(seed)) 0 else seed))
 
   .tfh_assemble(fit, ind, tags, a_pop, step_hours, movement)
@@ -199,7 +207,7 @@ TwilightFreeHier <- function(data, locations,
 # ---- per-tag setup + coarse-HMM surrogate ------------------------------------
 .tfh_build_individual <- function(tm, lt, loc, step_hours, calibration, likelihood_params,
                                   surrogate_diffusion, mesh_pad, coarse_res, inflate,
-                                  terms = list()) {
+                                  terms = list(), shade_ratio = 2) {
   ut <- as.numeric(tm)
   dlon <- loc$deploy_lon; dlat <- loc$deploy_lat
   # calibration / likelihood params (fixed or auto)
@@ -233,14 +241,15 @@ TwilightFreeHier <- function(data, locations,
   Cinv <- c(km_lon^2, 0, 0, km_lat^2)
   # surrogate (+ sensor-term aux field on the same coarse mesh)
   sur <- .tfh_surrogate(kt, obin, ut, lsh, cal, lp, loc, mesh_pad, coarse_res,
-                        surrogate_diffusion, inflate, Cinv, hstep, terms)
+                        surrogate_diffusion, inflate, Cinv, hstep, terms, shade_ratio)
   list(K = K, kt = kt, ot = ut, ol = lsh, obin = obin, cal = cal, lp = lp,
        deploy = c(dlon, dlat), retrieve = c(loc$retrieve_lon, loc$retrieve_lat),
        Cinv = Cinv, sur = sur, tstep = hstep)
 }
 
 .tfh_surrogate <- function(kt, obin, ut, lsh, cal, lp, loc, mesh_pad, coarse_res,
-                           surrogate_diffusion, inflate, Cinv, hstep, terms = list()) {
+                           surrogate_diffusion, inflate, Cinv, hstep, terms = list(),
+                           shade_ratio = 2) {
   K <- length(kt)
   lons <- c(loc$deploy_lon, loc$retrieve_lon); lats <- c(loc$deploy_lat, loc$retrieve_lat)
   lons <- lons[is.finite(lons)]; lats <- lats[is.finite(lats)]
@@ -260,7 +269,7 @@ TwilightFreeHier <- function(data, locations,
   E <- matrix(1 / n, K, n)
   for (k in seq_len(K)) {
     j <- obin[[k]]
-    ll <- if (length(j)) eval_logpk_grid(cg$lon, cg$lat, ut[j], lsh[j], cal, lp) else numeric(n)
+    ll <- if (length(j)) eval_logpk_grid(cg$lon, cg$lat, ut[j], lsh[j], cal, lp, shade_ratio) else numeric(n)
     ll <- ll + aux[k, ]
     m <- suppressWarnings(max(ll[is.finite(ll)]))
     if (!is.finite(m)) next

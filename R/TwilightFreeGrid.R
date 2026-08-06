@@ -13,6 +13,12 @@
 #' @param trans_prob Optional transition probability matrix (flattened, row-major) for behavioral states. Defaults to 0.9 diagonal if multiple diffusions are provided.
 #' @param calibration Calibration parameters c(intercept, slope)
 #' @param likelihood_params Likelihood parameters c(lambda, max_light, prob_slab)
+#' @param shade_ratio Ratio of the spike's upper-arm decay rate to its shading
+#'   (lower-arm) rate. The default `2` reproduces the historical fixed ratio.
+#'   The shading arm decides how cheaply the model can explain light far below
+#'   the clear-sky expectation, so a value below 1 suits a continuously diving
+#'   animal, whose record is mostly attenuated; a larger value makes shading
+#'   more surprising.
 #' @param terms Optional list of `location_term()` objects (priors, SST,
 #'   bathymetry, masks). Each contributes an additive log-likelihood over grid
 #'   cells that is combined with the light likelihood. Defaults to `list()`
@@ -33,6 +39,7 @@ TwilightFreeGrid <- function(date_time, light, grid,
                              trans_prob = NULL,
                              calibration = NULL,
                              likelihood_params = NULL,
+                             shade_ratio = 2,
                              terms = list(),
                              calibrate = FALSE) {
 
@@ -180,6 +187,7 @@ TwilightFreeGrid <- function(date_time, light, grid,
     trans_prob = as.numeric(trans_prob),
     calibration = as.numeric(calibration),
     likelihood_params = as.numeric(likelihood_params),
+    shade_ratio = as.numeric(shade_ratio),
     aux_logl = aux_flat
   )
   

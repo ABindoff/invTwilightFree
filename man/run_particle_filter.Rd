@@ -18,6 +18,7 @@ run_particle_filter(
   trans_prob,
   calibration,
   likelihood_params,
+  shade_ratio,
   mask_matrix,
   mask_extent,
   mask_nrow,
@@ -59,6 +60,12 @@ model, or `c(floor, amp, z50, scale)` for the logistic model (see details in
 `fit_light_response`). Length selects the model.}
 
 \item{likelihood_params}{c(lambda, max_light, prob_slab)}
+
+\item{shade_ratio}{Ratio of the upper-arm decay rate to the shading rate,
+i.e. lam_hi / lam_lo. 2 reproduces the previous fixed behaviour. Values
+below 1 make the shading tail heavier, which is what a continuously
+diving animal needs: most of its record is far below the clear-sky
+expectation and should be cheap to explain.}
 
 \item{mask_matrix}{Flattened spatial mask matrix (0 = impassable); empty for no mask}
 

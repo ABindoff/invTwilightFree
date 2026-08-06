@@ -11,7 +11,8 @@ eval_logpt_loc(
   light,
   offsets = seq(-3 * 3600, 3 * 3600, by = 120),
   calibration,
-  likelihood_params
+  likelihood_params,
+  shade_ratio = 2
 )
 }
 \arguments{
@@ -27,6 +28,9 @@ eval_logpt_loc(
 \item{calibration}{`c(intercept, slope)` mapping zenith to expected light.}
 
 \item{likelihood_params}{`c(lambda, max_light, prob_slab)`.}
+
+\item{shade_ratio}{Ratio of the spike's upper-arm rate to its shading rate
+(default 2), matching the engines.}
 }
 \value{
 A data frame with columns `offset` (seconds) and `loglik`.

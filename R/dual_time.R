@@ -24,6 +24,8 @@
 #'   +/- 3 hours at 2-minute steps.
 #' @param calibration `c(intercept, slope)` mapping zenith to expected light.
 #' @param likelihood_params `c(lambda, max_light, prob_slab)`.
+#' @param shade_ratio Ratio of the spike's upper-arm rate to its shading rate
+#'   (default 2), matching the engines.
 #'
 #' @return A data frame with columns `offset` (seconds) and `loglik`.
 #' @seealso [calibrate_clock()], [eval_logpk_grid()]
@@ -36,7 +38,7 @@
 #' @export
 eval_logpt_loc <- function(lon, lat, times, light,
                            offsets = seq(-3 * 3600, 3 * 3600, by = 120),
-                           calibration, likelihood_params) {
+                           calibration, likelihood_params, shade_ratio = 2) {
   tt <- as.numeric(times)
   intercept <- calibration[1]; slope <- calibration[2]
   lambda <- likelihood_params[1]; max_light <- likelihood_params[2]
@@ -48,16 +50,17 @@ eval_logpt_loc <- function(lon, lat, times, light,
   # Normalised over [0, max_light], matching the engine's spike_density(): the
   # normaliser depends on the expected light and therefore on the offset, so
   # omitting it changes the shape of the profile, not just its level.
+  lam_hi <- lambda * shade_ratio
   normaliser <- function(mu) {
     pmax(1e-12, (1 - exp(-lambda * mu)) +
-                0.5 * (1 - exp(-2 * lambda * (max_light - mu))))
+                (lambda / lam_hi) * (1 - exp(-lam_hi * (max_light - mu))))
   }
   loglik <- vapply(offsets, function(tau) {
     z <- solar_zenith(tt + tau, lonv, latv)
     expected <- .tf_expected_light(z, calibration, max_light)
     raw <- ifelse(light <= expected,
                   lambda * exp(-lambda * (expected - light)),
-                  lambda * exp(-lambda * 2 * (light - expected)))   # engine convention
+                  lambda * exp(-lam_hi * (light - expected)))       # engine convention
     den <- (1 - prob_slab) * raw / normaliser(expected) + prob_slab * slab
     sum(log(den))
   }, numeric(1))

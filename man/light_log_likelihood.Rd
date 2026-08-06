@@ -5,7 +5,14 @@
 \title{Calculate the log-likelihood of observed light given proposed tracks.
 uses a spike-and-slab model for false light events.}
 \usage{
-light_log_likelihood(obs_light, expected_light, lambda, max_light, prob_slab)
+light_log_likelihood(
+  obs_light,
+  expected_light,
+  lambda,
+  max_light,
+  prob_slab,
+  shade_ratio
+)
 }
 \arguments{
 \item{obs_light}{Observed light values}
@@ -17,6 +24,9 @@ light_log_likelihood(obs_light, expected_light, lambda, max_light, prob_slab)
 \item{max_light}{Maximum possible light value for the tag}
 
 \item{prob_slab}{Probability of a false light event (the slab)}
+
+\item{shade_ratio}{Ratio of the upper-arm decay rate to the shading rate
+(2 is the historical fixed value)}
 }
 \description{
 Calculate the log-likelihood of observed light given proposed tracks.

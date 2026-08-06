@@ -20,6 +20,7 @@ TwilightFreeSMC(
   trans_prob = NULL,
   calibration = NULL,
   likelihood_params = NULL,
+  shade_ratio = 2,
   spatial_mask = NULL,
   seed = NULL,
   terms = list(),
@@ -58,6 +59,13 @@ TwilightFreeSMC(
 \item{calibration}{Calibration parameters c(intercept, slope) mapping zenith to light. If NULL, auto-calibrates from data.}
 
 \item{likelihood_params}{Likelihood parameters c(lambda, max_light, prob_slab). If NULL, auto-calibrates from data.}
+
+\item{shade_ratio}{Ratio of the spike's upper-arm decay rate to its shading
+(lower-arm) rate. The default `2` reproduces the historical fixed ratio.
+The shading arm decides how cheaply the model can explain light far below
+the clear-sky expectation, so a value below 1 suits a continuously diving
+animal, whose record is mostly attenuated; a larger value makes shading
+more surprising.}
 
 \item{spatial_mask}{Optional `RasterLayer` (from the `raster` package) used to constrain particles to valid habitat (e.g. sea vs land). Cells with value 0 (or `NA`) are treated as impassable. If `NULL`, no spatial constraint is applied.}
 

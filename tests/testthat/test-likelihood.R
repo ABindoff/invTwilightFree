@@ -31,7 +31,7 @@ test_that("light_log_likelihood matches hand-computed value", {
   mix <- (1 - prob_slab) * spike_norm + prob_slab * slab_d
   expected_ll <- sum(log(mix))
 
-  result <- light_log_likelihood(obs, expected, lambda, max_light, prob_slab)
+  result <- light_log_likelihood(obs, expected, lambda, max_light, prob_slab, 2)
   expect_equal(result, expected_ll, tolerance = 1e-10)
 })
 
@@ -47,7 +47,7 @@ test_that("light_log_likelihood uses the factor-2 over-bright penalty, normalise
   spike_factor2 <- lambda * exp(-lambda * 2.0 * (obs - expected))
   ll <- log(spike_factor2 / spike_normaliser(expected, lambda, max_light))
 
-  result <- light_log_likelihood(obs, expected, lambda, max_light, prob_slab)
+  result <- light_log_likelihood(obs, expected, lambda, max_light, prob_slab, 2)
   expect_equal(result, ll, tolerance = 1e-10,
                label = "exported function uses the normalised factor-2 spike")
 })
