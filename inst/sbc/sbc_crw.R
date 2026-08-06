@@ -31,9 +31,16 @@ if (!exists("REPS"))   REPS   <- 100L
 if (!exists("SEED"))   SEED   <- 1L
 if (!exists("NTAGS"))  NTAGS  <- 3L      # small panel per replicate
 if (!exists("NDAYS"))  NDAYS  <- 14
-if (!exists("SWEEPS")) SWEEPS <- 1500L
-if (!exists("BURN"))   BURN   <- 500L
-if (!exists("THIN"))   THIN   <- 3L
+# rho mixes slowly because it is coupled to the latent track: changing it
+# changes the prior's shape, which changes the track, which changes rho.
+# Measured on a single dataset, 1500 sweeps thinned by 3 gave 334 draws with an
+# effective sample size of only 49. SBC ranks a truth against those draws, so
+# residual autocorrelation shows up as a rank distribution with heavy tails and
+# reads as a calibration failure. Sweep long and thin hard enough that the kept
+# draws are close to independent.
+if (!exists("SWEEPS")) SWEEPS <- 6000L
+if (!exists("BURN"))   BURN   <- 2000L
+if (!exists("THIN"))   THIN   <- 12L
 if (!exists("OUT"))    OUT    <- "sbc_crw.png"
 
 DEPLOY_LON <- 150; DEPLOY_LAT <- -50
