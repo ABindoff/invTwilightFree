@@ -17,7 +17,6 @@ Description: Reconstructs animal tracks from continuous light records recorded
 License: GPL (>= 3)
 Encoding: UTF-8
 LazyData: true
-RoxygenNote: 7.3.3
 Imports:
     ggplot2,
     sf,
@@ -37,3 +36,4 @@ Suggests:
 Config/rextendr/version: 0.5.0
 SystemRequirements: Cargo (Rust's package manager), rustc >= 1.65.0, xz
 VignetteBuilder: knitr
+Config/roxygen2/version: 8.0.0

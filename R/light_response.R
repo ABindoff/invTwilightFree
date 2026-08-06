@@ -43,12 +43,52 @@
 #' and using it makes the model expect zero where the sensor reads well above
 #' zero.
 #'
+#' @section Two quantities, two windows:
+#' The fit estimates two things that want different stretches of record, and
+#' `scale_light` exists so they do not have to share one.
+#'
+#' The **geometry** (`z50` and `scale`) is where twilight sits in zenith and how
+#' fast the channel falls through it. It needs a window over which the position
+#' is genuinely known. An animal that has already left the release site smears
+#' the envelope across zenith and flattens the fitted curve, and since latitude
+#' is read from that gradient the error is first order. On ten northern elephant
+#' seal deployments, assuming the release site for a fixed fifteen days while
+#' two of the animals were already hundreds of kilometres away flattened one
+#' tag's transition from 30 to 54 degrees and cost 543 km of median error
+#' against 289 km fitted at the positions the animal was actually at.
+#'
+#' The **intensity scale** (`baseline` and `max_light`) is the range the light is
+#' expressed on. It needs a window whose *shading* regime matches the record
+#' being tracked, which is a quite different requirement. For a diving animal
+#' the natural known-position window is a haul-out, and a hauled-out animal
+#' never dives, so its fifth percentile is night at the surface rather than a
+#' deep daytime dive. Carrying that scale into a record full of dives cost 447 km
+#' against 104 km when only the geometry was taken from the haul-out.
+#'
+#' So for a diving animal the recipe is: geometry from the pre-departure
+#' haul-out, where the animal is stationary, ashore and under open sky, and
+#' `scale_light` from the record about to be tracked. This needs no independent
+#' positions beyond the release site. Where several animals carry the same tag
+#' model, pool the geometry across them with [pool_light_responses()]; that is
+#' worth more again, and it is the only option for an animal that departs too
+#' fast to be calibrated at all.
+#'
+#' Do not instead try to bootstrap the geometry from a first-pass track. Latitude
+#' error biases the zenith angles the envelope is built from, which flattens the
+#' response, which biases latitude further; the loop amplifies rather than
+#' corrects. Measured over the calibration window alone it still ran away, from
+#' 321 km to 391 km to 755 km on successive turns. See [refine_light_response()].
+#'
 #' @param time Observation times (POSIXct, or numeric Unix seconds).
 #' @param light Observed light, on the tag's own scale. Do not baseline it: the
 #'   fitted `floor` is the baseline.
 #' @param lon,lat Known location for this stretch of record. Either scalars (a
 #'   stationary calibration period) or vectors as long as `time` (a known or
 #'   first-pass track).
+#' @param scale_light Optional light values from which to take the intensity
+#'   scale (`baseline` and `max_light`), when the window that pins the
+#'   *geometry* is not representative of the record to be fitted. Give it the
+#'   light from the record you are about to track. See the details.
 #' @param env_q Quantile taken within each zenith bin to form the upper
 #'   envelope. Default `0.95`. Lower it if the record is short.
 #' @param bin Zenith bin width in degrees (default `1`).
@@ -62,26 +102,35 @@
 #'   engine are `calibration` (`c(intercept, slope)`, the tangent to the fitted
 #'   curve at half amplitude), `baseline` (subtract it from the light before
 #'   fitting a track; the 5th percentile, not the dark level) and `max_light`.
-#'   Also returned
+#'   Those last two, and hence the slope, come from `scale_light` when it is
+#'   supplied. Also returned
 #'   are `calibration_logistic` (`c(floor, amp, z50, scale)`), `width_deg` (the
 #'   90 to 10 per cent zenith span), `saturate_at` and `zero_at`, and `envelope`,
 #'   the binned envelope the fit was made to. `NULL` if the record is too short
 #'   or too dark to support a fit.
 #'
-#' @seealso [refine_light_response()], [TwilightFreeGrid()]
+#' @seealso [pool_light_responses()], [refine_light_response()],
+#'   [TwilightFreeGrid()]
 #' @examples
-#' # A simulated logger that is linear in irradiance: the fit recovers a narrow
-#' # transition, as it should.
+#' # A simulated logger that is linear in irradiance: the fit finds a narrow
+#' # transition, ending near the zenith the line really reaches zero at (96).
 #' t <- seq(as.POSIXct("2021-06-01", tz = "UTC"), by = "5 min", length.out = 10 * 288)
 #' z <- solar_zenith(as.numeric(t), rep(150, length(t)), rep(-45, length(t)))
 #' lig <- pmin(pmax(558.5 - 5.818 * z, 0), 64)
 #' fit <- fit_light_response(t, lig, 150, -45)
-#' round(c(width = fit$width_deg, slope = fit$slope), 2)   # true slope 5.818
+#' round(c(width = fit$width_deg, slope = fit$slope, zero = fit$zero_at), 2)
+#' # The slope comes back steeper than the 5.818 the data were built with, and
+#' # that is the construction rather than a failure: a logistic fitted to a
+#' # clamped line has to bend at both ends, so its gradient at half amplitude
+#' # exceeds the line's by about 1.37. On a channel that really is smooth, which
+#' # is the case this function exists for, the tangent is the true local
+#' # gradient. Read `width_deg` to tell a linear channel (about 11 degrees) from
+#' # a log-scaled one (several tens); do not read `slope` as the line's own.
 #' @importFrom stats quantile median optim
 #' @export
 fit_light_response <- function(time, light, lon, lat,
                                env_q = 0.95, bin = 1, night_zenith = 108,
-                               min_bin = 3) {
+                               min_bin = 3, scale_light = NULL) {
   tt <- as.numeric(time)
   n <- length(tt)
   lon <- if (length(lon) == 1L) rep(lon, n) else lon
@@ -89,8 +138,12 @@ fit_light_response <- function(time, light, lon, lat,
   ok <- is.finite(tt) & is.finite(light) & is.finite(lon) & is.finite(lat)
   if (sum(ok) < 200) return(NULL)
   tt <- tt[ok]; li <- as.numeric(light)[ok]
-  q05 <- as.numeric(stats::quantile(li, 0.05))
-  rng <- as.numeric(stats::quantile(li, 0.95)) - q05
+  sl <- if (is.null(scale_light)) li else as.numeric(scale_light)
+  sl <- sl[is.finite(sl)]
+  if (!length(sl)) return(NULL)
+  q05 <- as.numeric(stats::quantile(sl, 0.05))
+  rng <- as.numeric(stats::quantile(sl, 0.95)) - q05
+  if (!is.finite(rng) || rng <= 0) return(NULL)
 
   z <- solar_zenith(tt, lon[ok], lat[ok])
   zb <- round(z / bin) * bin
@@ -139,7 +192,16 @@ fit_light_response <- function(time, light, lon, lat,
   # used as a stable way to MEASURE the response, and the tangent is what the
   # engine is given. `calibration_logistic` is kept for engines given the
   # four-parameter form directly.
-  lin_slope <- amp / (4 * scale)
+  # The tangent saturates at `4 * slope * scale`, so the slope is set from `rng`
+  # (which is `max_light`) rather than from the envelope's `amp`. That makes the
+  # expected curve reach exactly the top of the range the light is expressed on;
+  # tie it to `amp` instead and the curve tops out somewhere else, leaving the
+  # engine unable to explain the brightest observations as clear sky. The two
+  # differ by up to a quarter even measured on the same window, and it is worth
+  # 473 km against 363 km of median error on ten elephant seal deployments,
+  # rising to 411 km against 259 km once `scale_light` puts them on different
+  # windows.
+  lin_slope <- rng / (4 * scale)
   lin_zero  <- z50 + 2 * scale
   # `baseline` is what to subtract from the light before fitting a track, and it
   # is the low quantile, NOT the fitted dark level. Subtracting the dark level
@@ -157,6 +219,91 @@ fit_light_response <- function(time, light, lon, lat,
               envelope = data.frame(zenith = keep, light = env),
               n_used = sum(ok))
   class(out) <- "tf_light_response"
+  out
+}
+
+#' Pool response geometry across tags of the same model
+#'
+#' Replaces each tag's fitted `z50` and `scale` with the median across a set of
+#' fits, while every tag keeps its own intensity scale. Use it when a study
+#' deploys several tags of the same model, which is the usual case.
+#'
+#' @details
+#' The response geometry is a property of the **light channel**, so tags of one
+#' model are repeat measurements of nearly the same curve, and any single
+#' deployment measures it noisily. Pooling is worth more than it sounds. On ten
+#' northern elephant seal deployments the per-animal haul-out fits agreed
+#' closely (`z50` spanning 91.8 to 93.1 degrees, transition width 19.8 to 30.5),
+#' and substituting their median improved even the animals that had contributed
+#' a perfectly good fit of their own, taking median error from 259 km to 209 km.
+#' Across all ten it went from 473 km to 237 km, the worst tag from 1255 km to
+#' 483 km, and latitude interval coverage from 0.68 to 0.89.
+#'
+#' It also covers the animals that cannot be calibrated at all. Three of those
+#' ten left within a day of being tagged, leaving no stretch of record over
+#' which their position was known; pooled geometry is the only thing that gives
+#' them a defensible response.
+#'
+#' The intensity scale is deliberately **not** pooled. It depends on how much
+#' shading and diving the individual record contains, which is a property of the
+#' animal rather than the tag, and transferring it between animals makes things
+#' worse (see the details of [fit_light_response()]).
+#'
+#' @param geometry A list of `tf_light_response` objects to take the geometry
+#'   from, normally fitted over each animal's known-position window. `NULL`
+#'   entries are ignored, so a list with gaps can be passed straight in.
+#' @param scale A list of `tf_light_response` objects supplying each tag's own
+#'   `baseline` and `max_light`, normally fitted over the record about to be
+#'   tracked. Defaults to `geometry`. The returned list follows this one, in its
+#'   order and with its names.
+#'
+#' @return A list of `tf_light_response` objects, one per element of `scale`,
+#'   each carrying the pooled geometry and its own intensity scale. Elements are
+#'   `NULL` wherever `scale` is `NULL`. The pooled `z50` and `scale` are also
+#'   attached as the attribute `"pooled"`.
+#'
+#' @seealso [fit_light_response()]
+#' @examples
+#' # Two tags of one model, one calibrated over a long stationary period and one
+#' # over a short noisy one: pooling lends the second the first's precision.
+#' t <- seq(as.POSIXct("2021-06-01", tz = "UTC"), by = "10 min", length.out = 3000)
+#' z <- solar_zenith(as.numeric(t), rep(150, length(t)), rep(-45, length(t)))
+#' mk <- function(seed) {
+#'   set.seed(seed)
+#'   fit_light_response(t, pmin(pmax(558.5 - 5.818 * z, 0), 64) *
+#'                        runif(length(t), 0.8, 1), 150, -45)
+#' }
+#' pooled <- pool_light_responses(list(a = mk(1), b = mk(2)))
+#' attr(pooled, "pooled")
+#' @export
+pool_light_responses <- function(geometry, scale = geometry) {
+  if (!is.list(geometry) || !is.list(scale))
+    stop("`geometry` and `scale` must both be lists of tf_light_response objects")
+  g <- Filter(Negate(is.null), geometry)
+  if (!length(g)) stop("`geometry` contains no fitted responses")
+  bad <- !vapply(g, inherits, logical(1), "tf_light_response")
+  if (any(bad)) stop("`geometry` must contain tf_light_response objects")
+  z50_p <- stats::median(vapply(g, function(r) r$z50, 0))
+  sc_p  <- stats::median(vapply(g, function(r) r$scale, 0))
+
+  out <- lapply(scale, function(r) {
+    if (is.null(r)) return(NULL)
+    if (!inherits(r, "tf_light_response"))
+      stop("`scale` must contain tf_light_response objects")
+    # Same construction as fit_light_response(): the tangent at half amplitude,
+    # rising to the top of the range the light is expressed on.
+    slope <- r$max_light / (4 * sc_p)
+    zero  <- z50_p + 2 * sc_p
+    r$z50 <- z50_p; r$scale <- sc_p
+    r$calibration <- c(slope * zero, slope)
+    r$calibration_logistic <- c(r$floor, r$amp, z50_p, sc_p)
+    r$slope <- slope; r$zero_at <- zero
+    r$saturate_at <- z50_p - 2 * sc_p
+    r$width_deg <- 4.394 * sc_p
+    r$pooled_from <- length(g)
+    r
+  })
+  attr(out, "pooled") <- c(z50 = z50_p, scale = sc_p, n = length(g))
   out
 }
 

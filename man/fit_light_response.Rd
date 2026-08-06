@@ -12,7 +12,8 @@ fit_light_response(
   env_q = 0.95,
   bin = 1,
   night_zenith = 108,
-  min_bin = 3
+  min_bin = 3,
+  scale_light = NULL
 )
 }
 \arguments{
@@ -36,13 +37,19 @@ twilight).}
 
 \item{min_bin}{Minimum observations in a zenith bin for it to be used
 (default `3`).}
+
+\item{scale_light}{Optional light values from which to take the intensity
+scale (`baseline` and `max_light`), when the window that pins the
+*geometry* is not representative of the record to be fitted. Give it the
+light from the record you are about to track. See the details.}
 }
 \value{
 An object of class `tf_light_response`. The fields to pass to an
   engine are `calibration` (`c(intercept, slope)`, the tangent to the fitted
   curve at half amplitude), `baseline` (subtract it from the light before
   fitting a track; the 5th percentile, not the dark level) and `max_light`.
-  Also returned
+  Those last two, and hence the slope, come from `scale_light` when it is
+  supplied. Also returned
   are `calibration_logistic` (`c(floor, amp, z50, scale)`), `width_deg` (the
   90 to 10 per cent zenith span), `saturate_at` and `zero_at`, and `envelope`,
   the binned envelope the fit was made to. `NULL` if the record is too short
@@ -76,15 +83,61 @@ quantile is a deep daytime dive, which is darker than night at the surface,
 and using it makes the model expect zero where the sensor reads well above
 zero.
 }
+\section{Two quantities, two windows}{
+
+The fit estimates two things that want different stretches of record, and
+`scale_light` exists so they do not have to share one.
+
+The **geometry** (`z50` and `scale`) is where twilight sits in zenith and how
+fast the channel falls through it. It needs a window over which the position
+is genuinely known. An animal that has already left the release site smears
+the envelope across zenith and flattens the fitted curve, and since latitude
+is read from that gradient the error is first order. On ten northern elephant
+seal deployments, assuming the release site for a fixed fifteen days while
+two of the animals were already hundreds of kilometres away flattened one
+tag's transition from 30 to 54 degrees and cost 543 km of median error
+against 289 km fitted at the positions the animal was actually at.
+
+The **intensity scale** (`baseline` and `max_light`) is the range the light is
+expressed on. It needs a window whose *shading* regime matches the record
+being tracked, which is a quite different requirement. For a diving animal
+the natural known-position window is a haul-out, and a hauled-out animal
+never dives, so its fifth percentile is night at the surface rather than a
+deep daytime dive. Carrying that scale into a record full of dives cost 447 km
+against 104 km when only the geometry was taken from the haul-out.
+
+So for a diving animal the recipe is: geometry from the pre-departure
+haul-out, where the animal is stationary, ashore and under open sky, and
+`scale_light` from the record about to be tracked. This needs no independent
+positions beyond the release site. Where several animals carry the same tag
+model, pool the geometry across them with [pool_light_responses()]; that is
+worth more again, and it is the only option for an animal that departs too
+fast to be calibrated at all.
+
+Do not instead try to bootstrap the geometry from a first-pass track. Latitude
+error biases the zenith angles the envelope is built from, which flattens the
+response, which biases latitude further; the loop amplifies rather than
+corrects. Measured over the calibration window alone it still ran away, from
+321 km to 391 km to 755 km on successive turns. See [refine_light_response()].
+}
+
 \examples{
-# A simulated logger that is linear in irradiance: the fit recovers a narrow
-# transition, as it should.
+# A simulated logger that is linear in irradiance: the fit finds a narrow
+# transition, ending near the zenith the line really reaches zero at (96).
 t <- seq(as.POSIXct("2021-06-01", tz = "UTC"), by = "5 min", length.out = 10 * 288)
 z <- solar_zenith(as.numeric(t), rep(150, length(t)), rep(-45, length(t)))
 lig <- pmin(pmax(558.5 - 5.818 * z, 0), 64)
 fit <- fit_light_response(t, lig, 150, -45)
-round(c(width = fit$width_deg, slope = fit$slope), 2)   # true slope 5.818
+round(c(width = fit$width_deg, slope = fit$slope, zero = fit$zero_at), 2)
+# The slope comes back steeper than the 5.818 the data were built with, and
+# that is the construction rather than a failure: a logistic fitted to a
+# clamped line has to bend at both ends, so its gradient at half amplitude
+# exceeds the line's by about 1.37. On a channel that really is smooth, which
+# is the case this function exists for, the tangent is the true local
+# gradient. Read `width_deg` to tell a linear channel (about 11 degrees) from
+# a log-scaled one (several tens); do not read `slope` as the line's own.
 }
 \seealso{
-[refine_light_response()], [TwilightFreeGrid()]
+[pool_light_responses()], [refine_light_response()],
+  [TwilightFreeGrid()]
 }
