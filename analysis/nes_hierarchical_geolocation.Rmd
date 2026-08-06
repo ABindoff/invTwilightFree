@@ -81,6 +81,24 @@ knitr::opts_chunk$set(echo = TRUE, message = TRUE, warning = TRUE,
 options(stringsAsFactors = FALSE, width = 115)
 Sys.setlocale("LC_TIME", "C")   # the archives use "21:02:00 22-May-2021"
 set.seed(params$seed)
+
+# The path parameters are written relative to the PACKAGE ROOT, but knitr's
+# working directory defaults to the directory holding this file, so rendering it
+# any ordinary way ("Knit" in RStudio, or rmarkdown::render() with no
+# `knit_root_dir`) looks for the data one level too deep and stops at the
+# environment check. Find the root by walking up for DESCRIPTION and point knitr
+# at it. `params` itself cannot be rewritten here, since knitr locks it, and
+# root.dir takes effect from the next chunk on, which is why this is done in
+# `setup` and nowhere later.
+knitr::opts_knit$set(root.dir = local({
+  d <- normalizePath(getwd(), winslash = "/", mustWork = TRUE)
+  repeat {
+    if (file.exists(file.path(d, "DESCRIPTION"))) return(d)
+    up <- dirname(d)
+    if (identical(up, d)) return(normalizePath(getwd(), winslash = "/"))
+    d <- up
+  }
+}))
 ```
 
 # What this document does
@@ -281,6 +299,12 @@ timed <- function(expr) {
 # NB: never write return() inside the expression. It is forced as a promise
 # inside cache_rds(), so a return() there unwinds the wrong frame and the
 # assignment silently never happens.
+#
+# The key is the only thing tying a cached result to the code that made it, so
+# BUMP THE SUFFIX whenever anything upstream of a fit changes. The `_v2` keys
+# below date from the change to how the light response is calibrated (5.2),
+# which moves every fit and every clock offset; a run against `_v1` caches would
+# have reported the old numbers under the new text without a word of complaint.
 cache_rds <- function(key, expr, dir = params$cache_dir, refresh = FALSE) {
   f <- file.path(dir, paste0(key, ".rds"))
   if (!refresh && file.exists(f)) { message("cache hit: ", key); return(readRDS(f)) }
@@ -618,7 +642,7 @@ error it is meant to remove. The `ends` slice built in section 3.3 exists for
 exactly this, and costs nothing extra because it comes out of the same read.
 
 ```{r clock-estimate}
-clocks <- if (!isTRUE(params$estimate_clock)) NULL else cache_rds("clocks", {
+clocks <- if (!isTRUE(params$estimate_clock)) NULL else cache_rds("clocks_v2", {
   lapply(tags, function(g) {
     e <- archive_ends[[g$id]]
     e <- e[e$time >= g$t0 & e$time <= g$t1, ]
@@ -980,65 +1004,127 @@ and depth can only ever reduce the measured light, so the clear-sky curve is the
 top of the point cloud rather than its middle, which is what lets the fit
 survive an animal that is underwater most of the time.
 
+Two details of *which* record to fit turn out to matter more than anything else
+in this report, so they are worth stating before the code.
+
+**The window has to be one where the animal really is where you say it is.**
+Fitting a fixed fifteen days from the release fix assumes the animal is still at
+the colony, and these animals are not: by the end of that window the Argos track
+puts one of them a median 450 km away. A moving animal smears the envelope
+across zenith and flattens the fitted curve, and latitude is read from precisely
+that gradient. Tag 2021025 came out with a 54 degree transition against the 30
+degrees it shows when fitted at the positions it actually occupied, and it was
+the worst track in the panel at 1255 km. The tag dates its own departure without
+any help from Argos: a hauled-out seal does not dive, so the last day before
+continuous diving begins is the last day the colony position is true.
+
+**The geometry and the intensity scale want different windows.** `z50` and the
+transition width need known positions, so a haul-out. `baseline` and `max_light`
+need a record whose *shading* looks like the record being tracked, and a
+hauled-out seal never dives, so its fifth percentile is night at the surface
+rather than a deep daytime dive. Taking both from the haul-out is worse than the
+naive recipe (447 km against 321 km on a three-tag trial); taking only the
+geometry from it, and the scale from the record itself, gave 104 km. That split
+is what `scale_light` exists for.
+
+One consequence is convenient. The geometry is a property of the light channel,
+not the animal, and all ten seals carry the same tag model, so the seven usable
+haul-out fits are seven noisy measurements of one curve. Pooling them with
+`pool_light_responses()` improves even the animals that contributed a good fit
+of their own, and it is the only way to give a response to the three animals
+that left within a day of being tagged and can never be calibrated. The
+comparison behind these claims is run, not asserted: see *Choosing the
+calibration window* below.
+
 ```{r light-response}
-# Fitted on the working (30-minute) series over cal_window_days, not on the
-# high-resolution endpoint slice. The endpoint slice spans only a few days, and
-# a few foggy days at a coastal release site are not enough to pin a response:
-# fitted on three days, three of these ten tags returned physically impossible
-# curves (transitions of 88 to 107 degrees, saturating only above zenith 30),
-# and those three were also the three worst tracks. A longer window at coarser
-# resolution beats a short one at fine resolution here, because the response is
-# a shape in zenith, not an edge in time.
-responses <- lapply(tags, function(g) {
+# Everything here is fitted on the working (30-minute) series, not on the
+# high-resolution endpoint slice: the response is a shape in zenith, not an edge
+# in time, so it wants many days at coarse resolution rather than a few at fine.
+# Fitted on three days, three of these ten tags returned physically impossible
+# curves (transitions of 88 to 107 degrees, saturating only above zenith 30).
+#
+# When did the animal leave? A hauled-out seal does not dive, so take the first
+# day after which it is never ashore again. This uses the depth channel only:
+# no Argos, no assumption beyond the release fix.
+departure_time <- function(d, dive_m = 50) {
+  b <- as.integer(floor(as.numeric(d$time) / 86400))
+  deep <- tapply(d$depth_max > dive_m, b, mean, na.rm = TRUE)
+  day <- as.integer(names(deep))
+  at_sea <- deep > 0.5
+  if (!any(at_sea)) return(NA_real_)
+  last_ashore <- if (any(!at_sea)) max(which(!at_sea)) else 0L
+  i <- if (last_ashore >= length(at_sea)) which(at_sea)[1] else last_ashore + 1L
+  day[i] * 86400
+}
+
+# The intensity scale, per tag, from the standard window: this one has to look
+# like the record being tracked, dives and all.
+scale_fits <- lapply(tags, function(g) {
   k <- g$light$time <= min(g$light$time) + params$cal_window_days * 86400
   fit_light_response(g$light$time[k], g$light$light[k],
                      lon = g$deploy[["lon"]], lat = g$deploy[["lat"]])
 })
-names(responses) <- names(tags)
 
-# A transition far outside the physically sensible range means the fit failed,
-# not that the tag is exotic: a logger linear in irradiance gives about 11
-# degrees and a log-scaled channel a few tens. Such tags fall back to the median
-# of the fits that did work, which is defensible here because all ten animals
-# carried the same tag model. Substitutions are reported, never silent.
-plausible <- vapply(responses, function(r)
-  !is.null(r) && r$width_deg > 5 && r$width_deg < 60 && r$slope > 1.5, logical(1))
-if (any(plausible) && !all(plausible)) {
-  ok <- responses[plausible]
-  med <- list(calibration = c(stats::median(vapply(ok, function(r) r$calibration[1], 0)),
-                              stats::median(vapply(ok, function(r) r$calibration[2], 0))),
-              max_light = stats::median(vapply(ok, function(r) r$max_light, 0)),
-              baseline  = NA_real_,
-              slope = stats::median(vapply(ok, function(r) r$slope, 0)),
-              width_deg = stats::median(vapply(ok, function(r) r$width_deg, 0)),
-              saturate_at = stats::median(vapply(ok, function(r) r$saturate_at, 0)),
-              zero_at = stats::median(vapply(ok, function(r) r$zero_at, 0)),
-              dark_level = NA_real_)
-  for (id in names(responses)[!plausible]) {
-    keep_base <- if (is.null(responses[[id]])) NA_real_ else responses[[id]]$baseline
-    responses[[id]] <- med
-    responses[[id]]$baseline <- if (is.finite(keep_base)) keep_base else
-      as.numeric(stats::quantile(tags[[id]]$light$light, .05))
-    responses[[id]]$substituted <- TRUE
-  }
-}
-cat(sprintf("response fitted directly for %d of %d tags; %s\n",
-            sum(plausible), length(plausible),
-            if (all(plausible)) "no substitutions" else
-              paste("panel median substituted for",
-                    paste(names(plausible)[!plausible], collapse = ", "))))
+# The geometry, per tag, from the pre-departure haul-out: this one has to be a
+# window where the release fix is still the truth. Animals that left too fast to
+# leave 200 usable samples contribute nothing here and rely on the pool.
+geom_fits <- lapply(tags, function(g) {
+  dep <- departure_time(g$light)
+  k <- is.finite(dep) & as.numeric(g$light$time) < dep
+  if (sum(k) < 200) return(NULL)
+  # No `scale_light` here: only z50 and the transition width survive pooling,
+  # and neither depends on it. The scale comes from `scale_fits`.
+  fit_light_response(g$light$time[k], g$light$light[k],
+                     lon = g$deploy[["lon"]], lat = g$deploy[["lat"]])
+})
+
+haulout_table <- do.call(rbind, lapply(names(tags), function(id) {
+  dep <- departure_time(tags[[id]]$light)
+  k <- is.finite(dep) & as.numeric(tags[[id]]$light$time) < dep
+  data.frame(id = id,
+             departs = if (is.finite(dep))
+               format(as.POSIXct(dep, origin = "1970-01-01", tz = "UTC"), "%Y-%m-%d")
+               else NA_character_,
+             haulout_days = round(sum(k) * params$decimate_minutes / 1440, 1),
+             n = sum(k), used = !is.null(geom_fits[[id]]), row.names = NULL)
+}))
+haulout_table
+
+# Pool the geometry over the tags that have one; every tag keeps its own scale.
+responses <- pool_light_responses(geom_fits, scale_fits)
+pooled_geom <- attr(responses, "pooled")
+cat(sprintf("\npooled geometry from %d of %d tags: z50 = %.2f, transition %.1f degrees\n",
+            pooled_geom[["n"]], length(tags), pooled_geom[["z50"]],
+            4.394 * pooled_geom[["scale"]]))
+cat("per-tag haul-out geometry, before pooling:\n")
+print(data.frame(
+  id    = names(geom_fits)[!vapply(geom_fits, is.null, logical(1))],
+  z50   = round(vapply(Filter(Negate(is.null), geom_fits), function(r) r$z50, 0), 2),
+  width = round(vapply(Filter(Negate(is.null), geom_fits), function(r) r$width_deg, 0), 1),
+  row.names = NULL))
+
+# Pooling has replaced the old rescue rule, which substituted a panel median
+# only for tags whose fitted transition was physically impossible (outside 5 to
+# 60 degrees). That rule caught the catastrophic failures and missed the merely
+# bad ones: tag 2021025's 54 degree transition passed it, and that tag was the
+# worst track in the panel. Pooling every tag rather than only the obviously
+# broken ones removes the need for a threshold at all. The check is kept as an
+# assertion, because a pooled geometry outside this range would mean the whole
+# panel had failed and nothing downstream would be worth reading.
+stopifnot(pooled_geom[["z50"]] > 80, pooled_geom[["z50"]] < 105,
+          4.394 * pooled_geom[["scale"]] > 5, 4.394 * pooled_geom[["scale"]] < 60)
 
 resp_table <- do.call(rbind, lapply(names(responses), function(id) {
   r <- responses[[id]]
   if (is.null(r)) return(data.frame(id = id, slope = NA_real_, width_deg = NA_real_,
                                     saturate_at = NA_real_, zero_at = NA_real_,
                                     dark_level = NA_real_, baseline = NA_real_,
-                                    substituted = NA))
+                                    own_geometry = NA))
   data.frame(id = id, slope = round(r$slope, 2), width_deg = round(r$width_deg, 1),
              saturate_at = round(r$saturate_at, 1), zero_at = round(r$zero_at, 1),
              dark_level = if (is.finite(r$dark_level)) round(r$dark_level) else NA_real_,
              baseline = round(r$baseline),
-             substituted = isTRUE(r$substituted), row.names = NULL)
+             own_geometry = !is.null(geom_fits[[id]]), row.names = NULL)
 }))
 resp_table
 cat(sprintf("\nmedian fitted slope %.2f over a %.0f degree transition\n",
@@ -1049,13 +1135,16 @@ cat(sprintf("the old hard-coded default would have been range/11 = %.1f over 11 
               as.numeric(diff(stats::quantile(g$light$light, c(.05, .95)))) / 11, 0))))
 ```
 
-Two things to read off this table. `width_deg` well above 11 says the channel is
-log-scaled. `dark_level` sits far above `baseline` (the 5th percentile the
-engines subtract) because for a continuously diving animal the 5th percentile is
-a **deep daytime dive**, which is darker than night at the surface. The dark
-level is reported as a diagnostic but deliberately not used as the baseline:
-subtracting it clips every deep observation to zero and destroys the gradient
-that carries the signal.
+Three things to read off this table. `width_deg` well above 11 says the channel
+is log-scaled. It is now identical across tags, because the geometry is pooled;
+the per-tag spread before pooling is printed above it, and its tightness is the
+evidence that pooling is reasonable. `dark_level` sits far above `baseline` (the
+5th percentile the engines subtract) because for a continuously diving animal the
+5th percentile is a **deep daytime dive**, which is darker than night at the
+surface. The dark level is reported as a diagnostic but deliberately not used as
+the baseline: subtracting it clips every deep observation to zero and destroys
+the gradient that carries the signal, and doing so is worth about 300 km of
+median error.
 
 ```{r response-plot, fig.height = 4.5}
 op <- par(mar = c(4.2, 4.2, 2.4, 0.8))
@@ -1065,9 +1154,16 @@ ymax <- max(vapply(responses, function(r)
 plot(NA, xlim = c(40, 130), ylim = c(0, ymax),
      xlab = "solar zenith angle (degrees)", ylab = "light (tag units)",
      main = "Fitted clear-sky response, all tags")
+# The envelopes drawn are the haul-out ones the geometry was actually measured
+# from, not the 15-day ones that only set the intensity scale. Drawing the
+# latter under a pooled curve would invite the reader to check the fit against
+# data it was not fitted to.
+for (id in names(geom_fits)) {
+  r <- geom_fits[[id]]; if (is.null(r) || is.null(r$envelope)) next
+  lines(r$envelope$zenith, r$envelope$light, col = "#95a5a655")
+}
 for (id in names(responses)) {
   r <- responses[[id]]; if (is.null(r)) next
-  if (!is.null(r$envelope)) lines(r$envelope$zenith, r$envelope$light, col = "#95a5a655")
   lines(zz, pmin(pmax(r$calibration[1] - r$calibration[2] * zz, 0), r$max_light) + r$baseline,
         col = "#c0392b", lwd = 1.2)
 }
@@ -1076,7 +1172,7 @@ rng1 <- as.numeric(diff(stats::quantile(g1$light$light, c(.05, .95))))
 q051 <- as.numeric(stats::quantile(g1$light$light, .05))
 lines(zz, pmin(pmax(rng1 / 11 * 96 - rng1 / 11 * zz, 0), rng1) + q051,
       col = "#2980b9", lwd = 2, lty = 2)
-legend("bottomleft", c("measured envelope", "fitted response", "old hard-coded default"),
+legend("bottomleft", c("haul-out envelope", "pooled response", "old hard-coded default"),
        col = c("#95a5a6", "#c0392b", "#2980b9"), lwd = c(1, 1.2, 2),
        lty = c(1, 1, 2), bty = "n", cex = 0.9)
 par(op)
@@ -1166,8 +1262,15 @@ P$locations
 
 ```{r hier}
 # TwilightFreeHier applies one calibration across the panel, so the per-tag
-# responses are pooled by their median. They agree closely here (one tag model),
-# and the spread is in the table in section 5.2.
+# responses are pooled by their median. Since 5.2 now pools the geometry
+# already, this only pools what is left, the per-tag intensity scale.
+#
+# Worth noticing in passing: before 5.2 pooled anything, this line was the only
+# pooling in the report, and the hierarchical batch was also the only one that
+# performed well (224 km against the grid engine's 366 km on the same tags). The
+# hierarchical model was not beating the grid HMM on its merits so much as being
+# handed a calibration that had been quietly averaged over ten tags. Pooling the
+# geometry properly, for every engine, is what closes that gap.
 cal_panel <- {
   ok <- Filter(Negate(is.null), responses)
   c(stats::median(vapply(ok, function(r) r$calibration[1], 0)),
@@ -1187,9 +1290,9 @@ fit_hier <- function(pp, terms) timed(TwilightFreeHier(
   sweeps = as.integer(params$sweeps), burn = as.integer(params$burn),
   thin = as.integer(params$thin), metric = "spherical", seed = params$seed))
 
-hier_light     <- cache_rds("fit_hier_light",     fit_hier(P,     NULL))
-hier_fusion    <- cache_rds("fit_hier_fusion",    fit_hier(P,     soft_terms))
-hier_light_raw <- cache_rds("fit_hier_light_raw", fit_hier(P_raw, NULL))
+hier_light     <- cache_rds("fit_hier_light_v2",     fit_hier(P,     NULL))
+hier_fusion    <- cache_rds("fit_hier_fusion_v2",    fit_hier(P,     soft_terms))
+hier_light_raw <- cache_rds("fit_hier_light_raw_v2", fit_hier(P_raw, NULL))
 
 for (nm in c("hier_light", "hier_fusion", "hier_light_raw"))
   cat(sprintf("%-16s %7.1f s (%.1f min)\n", nm, get(nm)$seconds, get(nm)$seconds / 60))
@@ -1223,8 +1326,8 @@ fit_grid_batch <- function(terms_fn) timed(stats::setNames(lapply(names(tags), f
   fit_grid_one(id, if (is.null(terms_fn)) list() else terms_fn(id, NULL))
 }), names(tags)))
 
-grid_light  <- cache_rds("fit_grid_light",  fit_grid_batch(NULL))
-grid_fusion <- cache_rds("fit_grid_fusion", fit_grid_batch(hard_terms))
+grid_light  <- cache_rds("fit_grid_light_v2",  fit_grid_batch(NULL))
+grid_fusion <- cache_rds("fit_grid_fusion_v2", fit_grid_batch(hard_terms))
 cat(sprintf("grid_light  %7.1f s (%.1f min)\ngrid_fusion %7.1f s (%.1f min)\n",
             grid_light$seconds, grid_light$seconds / 60,
             grid_fusion$seconds, grid_fusion$seconds / 60))
@@ -1267,9 +1370,9 @@ run_ffbs <- function(id, terms) {
     diffusion = params$grid_diffusion, spatial_mask = smc_domain,
     terms = terms, seed = params$seed)
 }
-ffbs_light  <- cache_rds("fit_ffbs_light", timed(stats::setNames(lapply(ffbs_ids, function(id) {
+ffbs_light  <- cache_rds("fit_ffbs_light_v2", timed(stats::setNames(lapply(ffbs_ids, function(id) {
   message("ffbs light: ", id); run_ffbs(id, list()) }), ffbs_ids)))
-ffbs_fusion <- cache_rds("fit_ffbs_fusion", timed(stats::setNames(lapply(ffbs_ids, function(id) {
+ffbs_fusion <- cache_rds("fit_ffbs_fusion_v2", timed(stats::setNames(lapply(ffbs_ids, function(id) {
   message("ffbs fusion: ", id); run_ffbs(id, soft_terms(id, NULL)) }), ffbs_ids)))
 cat(sprintf("ffbs_light  %7.1f s\nffbs_fusion %7.1f s\n",
             ffbs_light$seconds, ffbs_fusion$seconds))
@@ -1353,6 +1456,79 @@ results[order(results$engine, results$batch, results$id),
         c("id", "engine", "batch", "n_scored", "median_km", "rmse_km",
           "bias_lon", "bias_lat", "cover95_lon", "cover95_lat")]
 ```
+
+## Choosing the calibration window
+
+Section 5.2 asserted that where the response is fitted matters more than
+anything else in this report. This runs the comparison rather than asserting it,
+on the grid HMM, over every tag's whole deployment, changing nothing but the
+response handed to the engine.
+
+`naive` is the recipe this report used until it was checked: fit each tag over a
+fixed 15 days from the release fix, assuming the animal stays put, and use that
+fit whole. `pooled` is the recipe above: geometry from each animal's
+pre-departure haul-out, pooled across the panel, with each animal keeping its own
+intensity scale. Nothing else differs, and neither recipe uses an Argos position
+for anything except scoring afterwards.
+
+```{r calibration-window}
+naive_responses <- stats::setNames(lapply(tags, function(g) {
+  k <- g$light$time <= min(g$light$time) + params$cal_window_days * 86400
+  fit_light_response(g$light$time[k], g$light$light[k],
+                     lon = g$deploy[["lon"]], lat = g$deploy[["lat"]])
+}), names(tags))
+
+fit_grid_with <- function(resp) timed(stats::setNames(lapply(names(tags), function(id) {
+  g <- tags[[id]]; r <- resp[[id]]
+  if (is.null(r)) return(NULL)
+  message("calibration check: ", id)
+  invisible(capture.output(
+    f <- TwilightFreeGrid(g$light$time, pmax(0, g$light$light - r$baseline), grid = grid,
+                          start_lon = unname(g$deploy[["lon"]]),
+                          start_lat = unname(g$deploy[["lat"]]),
+                          end_lon   = unname(g$recover[["lon"]]),
+                          end_lat   = unname(g$recover[["lat"]]),
+                          step_hours = params$step_hours,
+                          diffusion = params$grid_diffusion,
+                          calibration = r$calibration,
+                          likelihood_params = c(1/(r$max_light*0.5), r$max_light, 0.10))))
+  list(time = f$fit$time, lon = f$fit$lon, lat = f$fit$lat)
+}), names(tags)))
+
+cal_naive  <- cache_rds("cal_check_naive",  fit_grid_with(naive_responses))
+cal_pooled <- cache_rds("cal_check_pooled", fit_grid_with(responses))
+
+cal_knots <- rbind(score_grid(Filter(Negate(is.null), cal_naive$value),  "naive"),
+                   score_grid(Filter(Negate(is.null), cal_pooled$value), "pooled"))
+cal_res <- do.call(rbind, lapply(split(cal_knots, list(cal_knots$id, cal_knots$batch),
+                                       drop = TRUE), summarise_tag))
+row.names(cal_res) <- NULL
+
+# Per tag, side by side, so a single rescued animal cannot carry the average.
+cal_wide <- merge(
+  cal_res[cal_res$batch == "naive",  c("id", "median_km", "rmse_lat_deg", "bias_lat")],
+  cal_res[cal_res$batch == "pooled", c("id", "median_km", "rmse_lat_deg", "bias_lat")],
+  by = "id", suffixes = c("_naive", "_pooled"))
+cal_wide[] <- lapply(cal_wide, function(x) if (is.numeric(x)) round(x, 2) else x)
+cal_wide$own_geometry <- !vapply(geom_fits[cal_wide$id], is.null, logical(1))
+cal_wide
+
+cat("\npooled over knots:\n")
+print(do.call(rbind, lapply(split(cal_knots, cal_knots$batch), function(k) {
+  kk <- k[is.finite(k$err_km), , drop = FALSE]
+  data.frame(recipe = k$batch[1], n_scored = nrow(kk),
+             median_km = round(stats::median(kk$err_km)),
+             q90_km = round(unname(stats::quantile(kk$err_km, .9))),
+             bias_lat = round(mean(kk$err_lat), 2),
+             rmse_lat = round(sqrt(mean(kk$err_lat^2)), 2),
+             row.names = NULL)
+})), row.names = FALSE)
+```
+
+The three animals with no haul-out are worth reading separately: they contribute
+no geometry to the pool and take it entirely on loan, so they are the honest test
+of whether a response measured on other individuals transfers. If they improve,
+the geometry really is a property of the tag model rather than of the animal.
 
 ## Batch summary
 
