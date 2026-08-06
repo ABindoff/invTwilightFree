@@ -68,6 +68,61 @@ fn spike_normaliser(mu: f64, lambda: f64, max_light: f64) -> f64 {
     (lo + hi).max(1e-12)
 }
 
+/// Standard normal CDF, Abramowitz & Stegun 7.1.26 (|error| < 1.5e-7).
+#[inline]
+fn norm_cdf(z: f64) -> f64 {
+    let x = z / std::f64::consts::SQRT_2;
+    let sign = if x < 0.0 { -1.0 } else { 1.0 };
+    let ax = x.abs();
+    let t = 1.0 / (1.0 + 0.3275911 * ax);
+    let y = 1.0 - (((((1.061405429*t - 1.453152027)*t + 1.421413741)*t
+                    - 0.284496736)*t + 0.254829592)*t) * (-ax*ax).exp();
+    0.5 * (1.0 + sign * y)
+}
+
+/// Inverse standard normal CDF, Acklam's rational approximation
+/// (relative error < 1.2e-9), used to draw exactly from a truncated normal.
+fn norm_ppf(p: f64) -> f64 {
+    const A: [f64; 6] = [-3.969683028665376e1, 2.209460984245205e2, -2.759285104469687e2,
+                          1.383577518672690e2, -3.066479806614716e1, 2.506628277459239e0];
+    const B: [f64; 5] = [-5.447609879822406e1, 1.615858368580409e2, -1.556989798598866e2,
+                          6.680131188771972e1, -1.328068155288572e1];
+    const C: [f64; 6] = [-7.784894002430293e-3, -3.223964580411365e-1, -2.400758277161838e0,
+                         -2.549732539343734e0, 4.374664141464968e0, 2.938163982698783e0];
+    const D: [f64; 4] = [7.784695709041462e-3, 3.224671290700398e-1,
+                         2.445134137142996e0, 3.754408661907416e0];
+    let pl = 0.02425;
+    if p < pl {
+        let q = (-2.0 * p.ln()).sqrt();
+        (((((C[0]*q+C[1])*q+C[2])*q+C[3])*q+C[4])*q+C[5]) /
+        ((((D[0]*q+D[1])*q+D[2])*q+D[3])*q+1.0)
+    } else if p <= 1.0 - pl {
+        let q = p - 0.5; let r = q * q;
+        (((((A[0]*r+A[1])*r+A[2])*r+A[3])*r+A[4])*r+A[5]) * q /
+        (((((B[0]*r+B[1])*r+B[2])*r+B[3])*r+B[4])*r+1.0)
+    } else {
+        let q = (-2.0 * (1.0 - p).ln()).sqrt();
+        -(((((C[0]*q+C[1])*q+C[2])*q+C[3])*q+C[4])*q+C[5]) /
+         ((((D[0]*q+D[1])*q+D[2])*q+D[3])*q+1.0)
+    }
+}
+
+/// Draw from N(mean, sd^2) restricted to (lo, hi) by inverse CDF.
+///
+/// Clamping an untruncated draw instead of this piles posterior mass on the
+/// boundary, which biases the parameter and is exactly what simulation-based
+/// calibration detects: the persistence rho failed its ECDF bands with ranks
+/// heaped in the lowest decile until this replaced a clamp.
+#[inline]
+fn rnorm_trunc(mean: f64, sd: f64, lo: f64, hi: f64, rng: &mut StdRng) -> f64 {
+    let (a, b) = ((lo - mean) / sd, (hi - mean) / sd);
+    let (pa, pb) = (norm_cdf(a), norm_cdf(b));
+    if !(pb > pa) { return mean.max(lo).min(hi); }   // numerically degenerate
+    let u: f64 = rng.gen();
+    let p = (pa + u * (pb - pa)).max(1e-12).min(1.0 - 1e-12);
+    (mean + sd * norm_ppf(p)).max(lo).min(hi)
+}
+
 /// Copy a calibration slice into a fixed-size array so `Ctx` needs no lifetime
 /// for it. Anything beyond the first four entries is ignored.
 #[inline]
@@ -1684,7 +1739,10 @@ fn run_block_track(
 ///   alongside the movement variance. FALSE gives the memoryless Brownian walk
 ///   and is bit-identical to the previous behaviour.
 /// @param rho_prior_sd Standard deviation of the mean-zero normal prior on each
-///   tag's persistence; rho is confined to (-0.99, 0.99)
+///   tag's persistence
+/// @param rho_max Persistence is confined to (-rho_max, rho_max). Values near 1
+///   are near-non-stationary: displacement then grows like n^1.5 rather than
+///   sqrt(n), so a track can leave the surrogate mesh entirely.
 /// @param seed RNG seed; 0 means entropy
 /// @return List with beta and sig2 (kept draws), plus per-knot track posterior
 ///   mean_lon/sd_lon/mean_lat/sd_lat (concatenated across individuals, same order
@@ -1703,7 +1761,7 @@ fn run_block_hier(
     aux_lon0: Vec<f64>, aux_dlon: Vec<f64>, aux_lat0: Vec<f64>, aux_dlat: Vec<f64>,
     a_pop: f64, g0: f64, h0: f64,
     block_len: i32, sweeps: i32, burn: i32, thin: i32, polish: bool, spherical: bool,
-    crw: bool, rho_prior_sd: f64, seed: f64,
+    crw: bool, rho_prior_sd: f64, rho_max: f64, seed: f64,
 ) -> List {
     let n = n_ind as usize;
     let bl = block_len as usize;
@@ -1826,9 +1884,9 @@ fn run_block_hier(
                 if prec > 0.0 && den.is_finite() {
                     let mean = (num / sig2[i]) / prec;
                     let sd = (1.0 / prec).sqrt();
-                    let mut r = mean + sd * rng.sample(&nrm);
-                    if !r.is_finite() { r = 0.0; }
-                    rho[i] = r.max(-0.99).min(0.99);
+                    let rmx = if rho_max > 0.0 && rho_max < 1.0 { rho_max } else { 0.99 };
+                    let r = rnorm_trunc(mean, sd, -rmx, rmx, &mut rng);
+                    rho[i] = if r.is_finite() { r } else { 0.0 };
                     ctxs[i].rho.set(rho[i]);
                 }
             }

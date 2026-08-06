@@ -64,7 +64,11 @@
 #'   compromises between them, leaving position intervals too narrow.
 #'   \code{"brownian"} is bit-identical to previous versions.
 #' @param rho_prior_sd Standard deviation of the mean-zero normal prior on each
-#'   tag's persistence (default 0.5); \eqn{\rho} is confined to (-0.99, 0.99).
+#'   tag's persistence (default 0.5).
+#' @param rho_max Persistence is confined to \code{(-rho_max, rho_max)} (default
+#'   0.95). Values approaching 1 are near-non-stationary: displacement then grows
+#'   like \eqn{n^{1.5}} rather than \eqn{\sqrt{n}}, and a simulated or fitted
+#'   track can wander outside the proposal surrogate's mesh.
 #' @param seed Integer RNG seed; \code{NULL} is non-deterministic.
 #' @return An object of class \code{TwilightFreeHier} with elements \code{population}
 #'   (population movement scale posterior, km/day), \code{movement} (per-tag
@@ -83,7 +87,7 @@ TwilightFreeHier <- function(data, locations,
                              inflate = 1.5, block_len = 5L,
                              sweeps = 4000L, burn = 1500L, thin = 5L,
                              polish = TRUE, metric = c("spherical", "flat"),
-                             movement = c("brownian", "crw"), rho_prior_sd = 0.5,
+                             movement = c("brownian", "crw"), rho_prior_sd = 0.5, rho_max = 0.95,
                              seed = NULL) {
 
   metric <- match.arg(metric)
@@ -119,7 +123,7 @@ TwilightFreeHier <- function(data, locations,
     a_pop, hyperprior[1], hyperprior[2], as.integer(block_len),
     as.integer(sweeps), as.integer(burn), as.integer(thin), isTRUE(polish),
     identical(metric, "spherical"),
-    identical(movement, "crw"), as.numeric(rho_prior_sd),
+    identical(movement, "crw"), as.numeric(rho_prior_sd), as.numeric(rho_max),
     as.numeric(if (is.null(seed)) 0 else seed))
 
   .tfh_assemble(fit, ind, tags, a_pop, step_hours, movement)

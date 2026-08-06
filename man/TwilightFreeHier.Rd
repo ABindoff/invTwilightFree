@@ -27,6 +27,7 @@ TwilightFreeHier(
   metric = c("spherical", "flat"),
   movement = c("brownian", "crw"),
   rho_prior_sd = 0.5,
+  rho_max = 0.95,
   seed = NULL
 )
 }
@@ -104,7 +105,12 @@ compromises between them, leaving position intervals too narrow.
 \code{"brownian"} is bit-identical to previous versions.}
 
 \item{rho_prior_sd}{Standard deviation of the mean-zero normal prior on each
-tag's persistence (default 0.5); \eqn{\rho} is confined to (-0.99, 0.99).}
+tag's persistence (default 0.5).}
+
+\item{rho_max}{Persistence is confined to \code{(-rho_max, rho_max)} (default
+0.95). Values approaching 1 are near-non-stationary: displacement then grows
+like \eqn{n^{1.5}} rather than \eqn{\sqrt{n}}, and a simulated or fitted
+track can wander outside the proposal surrogate's mesh.}
 
 \item{seed}{Integer RNG seed; \code{NULL} is non-deterministic.}
 }

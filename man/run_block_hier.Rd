@@ -38,6 +38,7 @@ run_block_hier(
   spherical,
   crw,
   rho_prior_sd,
+  rho_max,
   seed
 )
 }
@@ -105,7 +106,11 @@ alongside the movement variance. FALSE gives the memoryless Brownian walk
 and is bit-identical to the previous behaviour.}
 
 \item{rho_prior_sd}{Standard deviation of the mean-zero normal prior on each
-tag's persistence; rho is confined to (-0.99, 0.99)}
+tag's persistence}
+
+\item{rho_max}{Persistence is confined to (-rho_max, rho_max). Values near 1
+are near-non-stationary: displacement then grows like n^1.5 rather than
+sqrt(n), so a track can leave the surrogate mesh entirely.}
 
 \item{seed}{RNG seed; 0 means entropy}
 }

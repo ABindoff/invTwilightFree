@@ -153,12 +153,15 @@ run_block_track <- function(knot_obs_start, knot_obs_len, obs_times, obs_light, 
 #'   alongside the movement variance. FALSE gives the memoryless Brownian walk
 #'   and is bit-identical to the previous behaviour.
 #' @param rho_prior_sd Standard deviation of the mean-zero normal prior on each
-#'   tag's persistence; rho is confined to (-0.99, 0.99)
+#'   tag's persistence
+#' @param rho_max Persistence is confined to (-rho_max, rho_max). Values near 1
+#'   are near-non-stationary: displacement then grows like n^1.5 rather than
+#'   sqrt(n), so a track can leave the surrogate mesh entirely.
 #' @param seed RNG seed; 0 means entropy
 #' @return List with beta and sig2 (kept draws), plus per-knot track posterior
 #'   mean_lon/sd_lon/mean_lat/sd_lat (concatenated across individuals, same order
 #'   as knots_per_ind), and rho (per-tag persistence draws, zero when crw is FALSE)
 #' @name run_block_hier
-run_block_hier <- function(n_ind, knots_per_ind, knot_obs_start, knot_obs_len, obs_times, obs_light, cal, lp, surr_mu, surr_p, cinv, start_lon, start_lat, end_lon, end_lat, aux_flat, aux_ncol, aux_nrow, aux_lon0, aux_dlon, aux_lat0, aux_dlat, a_pop, g0, h0, block_len, sweeps, burn, thin, polish, spherical, crw, rho_prior_sd, seed) .Call(wrap__run_block_hier, n_ind, knots_per_ind, knot_obs_start, knot_obs_len, obs_times, obs_light, cal, lp, surr_mu, surr_p, cinv, start_lon, start_lat, end_lon, end_lat, aux_flat, aux_ncol, aux_nrow, aux_lon0, aux_dlon, aux_lat0, aux_dlat, a_pop, g0, h0, block_len, sweeps, burn, thin, polish, spherical, crw, rho_prior_sd, seed)
+run_block_hier <- function(n_ind, knots_per_ind, knot_obs_start, knot_obs_len, obs_times, obs_light, cal, lp, surr_mu, surr_p, cinv, start_lon, start_lat, end_lon, end_lat, aux_flat, aux_ncol, aux_nrow, aux_lon0, aux_dlon, aux_lat0, aux_dlat, a_pop, g0, h0, block_len, sweeps, burn, thin, polish, spherical, crw, rho_prior_sd, rho_max, seed) .Call(wrap__run_block_hier, n_ind, knots_per_ind, knot_obs_start, knot_obs_len, obs_times, obs_light, cal, lp, surr_mu, surr_p, cinv, start_lon, start_lat, end_lon, end_lat, aux_flat, aux_ncol, aux_nrow, aux_lon0, aux_dlon, aux_lat0, aux_dlat, a_pop, g0, h0, block_len, sweeps, burn, thin, polish, spherical, crw, rho_prior_sd, rho_max, seed)
 
 # nolint end
