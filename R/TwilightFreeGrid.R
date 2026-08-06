@@ -13,6 +13,12 @@
 #' @param trans_prob Optional transition probability matrix (flattened, row-major) for behavioral states. Defaults to 0.9 diagonal if multiple diffusions are provided.
 #' @param calibration Calibration parameters c(intercept, slope)
 #' @param likelihood_params Likelihood parameters c(lambda, max_light, prob_slab)
+#' @param overcount Effective over-counting of light observations within a knot
+#'   (default 1). Light half an hour apart shares cloud, sea state and
+#'   behaviour, so n observations carry roughly n/overcount observations' worth
+#'   of information; the per-knot log-likelihood is divided by this, widening
+#'   the posterior by about sqrt(overcount) without moving the point estimate.
+#'   Use it when reported intervals are too narrow against known positions.
 #' @param shade_ratio Ratio of the spike's upper-arm decay rate to its shading
 #'   (lower-arm) rate. The default `2` reproduces the historical fixed ratio.
 #'   The shading arm decides how cheaply the model can explain light far below
@@ -40,6 +46,7 @@ TwilightFreeGrid <- function(date_time, light, grid,
                              calibration = NULL,
                              likelihood_params = NULL,
                              shade_ratio = 2,
+                             overcount = 1,
                              terms = list(),
                              calibrate = FALSE) {
 
@@ -188,6 +195,7 @@ TwilightFreeGrid <- function(date_time, light, grid,
     calibration = as.numeric(calibration),
     likelihood_params = as.numeric(likelihood_params),
     shade_ratio = as.numeric(shade_ratio),
+    overcount = as.numeric(overcount),
     aux_logl = aux_flat
   )
   

@@ -19,6 +19,7 @@ TwilightFreeGrid(
   calibration = NULL,
   likelihood_params = NULL,
   shade_ratio = 2,
+  overcount = 1,
   terms = list(),
   calibrate = FALSE
 )
@@ -56,6 +57,13 @@ The shading arm decides how cheaply the model can explain light far below
 the clear-sky expectation, so a value below 1 suits a continuously diving
 animal, whose record is mostly attenuated; a larger value makes shading
 more surprising.}
+
+\item{overcount}{Effective over-counting of light observations within a knot
+(default 1). Light half an hour apart shares cloud, sea state and
+behaviour, so n observations carry roughly n/overcount observations' worth
+of information; the per-knot log-likelihood is divided by this, widening
+the posterior by about sqrt(overcount) without moving the point estimate.
+Use it when reported intervals are too narrow against known positions.}
 
 \item{terms}{Optional list of `location_term()` objects (priors, SST,
 bathymetry, masks). Each contributes an additive log-likelihood over grid
