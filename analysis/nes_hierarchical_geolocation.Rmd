@@ -25,7 +25,7 @@ params:
   decimate_minutes:   30      # the archives are 4-second; thin to this window (see 3.3)
   surface_depth_m:     5      # at or above this depth a temperature reading is "surface"
   clock_search_min:  120      # half-width of the clock offset search, minutes
-  clock_max_accept_min: 60    # reject an estimate above this: it is at the search bound
+  clock_max_accept_min: 20    # reject an offset OR a drift larger than this (see 3.7)
   estimate_clock:   TRUE      # estimate the per-tag clock offset from the known endpoints
   apply_clock_correction: TRUE    # ...and shift the timestamps by it (see 3.7)
   clock_hires_minutes: 1      # resolution of the light used for the clock (see 3.7)
@@ -675,12 +675,22 @@ if (!is.null(clocks)) {
                offset_deploy_min = round(od, 2), offset_recover_min = round(orr, 2),
                drift_min_per_day = round((orr - od) / days, 4),
                lon_bias_deg = round(od * 0.25, 2),
-               accepted = max(abs(od), abs(orr)) <= params$clock_max_accept_min,
+               drift_total_min = round(orr - od, 2),
+               # Two ways to fail. A large OFFSET means the profile ran to the
+               # search bound rather than finding an interior optimum. A large
+               # DRIFT means the two endpoint estimates disagree by more than a
+               # clock of this vintage can plausibly wander, and it is the more
+               # dangerous of the two because `correct()` interpolates linearly
+               # between them and so spreads the disagreement over the whole
+               # record. The SPOT table above sets the scale: real drift over a
+               # whole deployment runs -1.4 to +13.3 minutes.
+               accepted = max(abs(od), abs(orr)) <= params$clock_max_accept_min &&
+                          abs(orr - od) <= params$clock_max_accept_min,
                row.names = NULL)
   }))
   print(clock_table)
-  cat(sprintf("\n%d of %d estimates are interior to the +/- %.0f min search and accepted\n",
-              sum(clock_table$accepted), nrow(clock_table), params$clock_search_min))
+  cat(sprintf("\n%d of %d estimates accepted (offset and drift both within +/- %.0f min)\n",
+              sum(clock_table$accepted), nrow(clock_table), params$clock_max_accept_min))
 }
 ```
 
@@ -688,6 +698,25 @@ Even at 1-minute resolution the estimate is not free of doubt, so it is not
 taken on trust. `hier_light` and `hier_light_raw` are identical except for this
 correction, so section 7 measures whether it helped, against Argos, rather than
 asserting that it must have.
+
+The acceptance rule earned its keep the hard way. It used to reject only offsets
+above 60 minutes against a 120-minute search, which caught estimates that had run
+to the wall but was no test of plausibility at all. When the calibration of 5.2
+improved, the profile likelihood started finding *interior* optima instead of
+running to the bound, and those were duly accepted and applied: one tag was
+handed 9 minutes at deployment ramping to 41.7 at recovery. `correct()` spreads
+that disagreement linearly over the record, so it is about 8 degrees of longitude
+by the end of the trip, and it cost the whole report several hundred kilometres
+before the cause was found. The SPOT records printed above are what a clock of
+this vintage actually does over a whole deployment: between -1.4 and +13.3
+minutes. A 33-minute drift is two and a half times the largest real one, and an
+estimate is now rejected if either its offset or its implied drift exceeds
+`clock_max_accept_min`.
+
+A better estimator is not the lesson here; a rejection rule that knows what a
+clock can physically do is. If every estimate is rejected, `hier_light` and
+`hier_light_raw` coincide and section 7 reports no difference, which is the
+honest answer rather than a missing comparison.
 
 ```{r clock-apply}
 tags_raw <- tags                        # uncorrected copy, for hier_light_raw
