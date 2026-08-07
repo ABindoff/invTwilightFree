@@ -27,7 +27,7 @@ params:
   clock_search_min:  120      # half-width of the clock offset search, minutes
   clock_max_accept_min: 20    # reject an offset OR a drift larger than this (see 3.7)
   estimate_clock:   TRUE      # estimate the per-tag clock offset from the known endpoints
-  apply_clock_correction: TRUE    # ...and shift the timestamps by it (see 3.7)
+  apply_clock_correction: FALSE   # ...but do NOT shift by it; see 3.7 for why
   clock_hires_minutes: 1      # resolution of the light used for the clock (see 3.7)
   clock_window_days:   3      # days of light around each known fix
   cal_window_days:    15      # days at the release site used to fit the light response
@@ -132,17 +132,18 @@ reconstruction against Argos. It answers four questions.
 
 | Key | Engine | Terms | Tags | Clock |
 |---|---|---|---|---|
-| `hier_light` | `TwilightFreeHier` | none | all | corrected |
-| `hier_fusion` | `TwilightFreeHier` | soft bathy + SST + soft mask | all | corrected |
-| `hier_light_raw` | `TwilightFreeHier` | none | all | **uncorrected** |
-| `grid_light` | `TwilightFreeGrid` | none | all | corrected |
-| `grid_fusion` | `TwilightFreeGrid` | **hard** bathy + hard mask + SST | all | corrected |
-| `ffbs_light` | `TwilightFreeSMC("ffbs")` | none | subset | corrected |
-| `ffbs_fusion` | `TwilightFreeSMC("ffbs")` | soft bathy + SST | subset | corrected |
+| `hier_light` | `TwilightFreeHier` | none | all | as estimated (none accepted) |
+| `hier_fusion` | `TwilightFreeHier` | soft bathy + SST + soft mask | all | as estimated (none accepted) |
+| `hier_light_forced` | `TwilightFreeHier` | none | all | **forced, rule overridden** |
+| `grid_light` | `TwilightFreeGrid` | none | all | as estimated (none accepted) |
+| `grid_fusion` | `TwilightFreeGrid` | **hard** bathy + hard mask + SST | all | as estimated (none accepted) |
+| `ffbs_light` | `TwilightFreeSMC("ffbs")` | none | subset | as estimated (none accepted) |
+| `ffbs_fusion` | `TwilightFreeSMC("ffbs")` | soft bathy + SST | subset | as estimated (none accepted) |
 
-`hier_light` and `hier_light_raw` differ only in whether the clock correction of
-section 3.7 was applied, which turns "does clock calibration help?" into a
-measurement rather than an opinion.
+`hier_light` and `hier_light_forced` differ only in whether the clock estimates
+of section 3.7 were applied in defiance of the acceptance rule, which turns "is
+this estimator safe to trust?" into a measurement rather than an opinion. No
+estimate passes the rule, so every other batch runs on raw timestamps.
 
 ## Longitude convention
 
@@ -695,9 +696,10 @@ if (!is.null(clocks)) {
 ```
 
 Even at 1-minute resolution the estimate is not free of doubt, so it is not
-taken on trust. `hier_light` and `hier_light_raw` are identical except for this
-correction, so section 7 measures whether it helped, against Argos, rather than
-asserting that it must have.
+taken on trust. `hier_light` and `hier_light_forced` are identical except that
+the second applies every estimate in defiance of the rule below, so section 7
+measures what trusting this estimator costs rather than asserting that it must
+be avoided.
 
 The acceptance rule earned its keep the hard way. It used to reject only offsets
 above 60 minutes against a 120-minute search, which caught estimates that had run
@@ -714,24 +716,38 @@ estimate is now rejected if either its offset or its implied drift exceeds
 `clock_max_accept_min`.
 
 A better estimator is not the lesson here; a rejection rule that knows what a
-clock can physically do is. If every estimate is rejected, `hier_light` and
-`hier_light_raw` coincide and section 7 reports no difference, which is the
-honest answer rather than a missing comparison.
+clock can physically do is. `apply_clock_correction` is `FALSE` and no estimate
+would pass the rule in any case, so the reported batches all run on raw
+timestamps. `hier_light_forced` applies them anyway, and the contrast in section
+7 is what the rule is worth: it is the difference between a threshold argued for
+in prose and one with a number attached.
 
 ```{r clock-apply}
-tags_raw <- tags                        # uncorrected copy, for hier_light_raw
-n_applied <- 0L
-if (isTRUE(params$apply_clock_correction) && !is.null(clocks)) {
+# Two copies. The panel itself is corrected only where an estimate passes the
+# rule, and only if `apply_clock_correction` is set; with the rule as it stands
+# nothing passes, so it keeps its raw timestamps.
+#
+# `tags_forced` applies every estimate REGARDLESS of the rule. That batch is not
+# an alternative analysis, it is the evidence for the rule: without it the
+# 20-minute threshold is a number asserted in prose, and with it section 7
+# reports what trusting the estimator actually costs.
+n_applied <- 0L; n_forced <- 0L
+tags_forced <- tags
+if (!is.null(clocks)) {
   for (id in names(tags)) {
     cl <- clocks[[id]]
-    ok <- isTRUE(clock_table$accepted[match(id, clock_table$id)])
-    if (ok && !is.null(cl) && is.function(cl$correct)) {
+    if (is.null(cl) || !is.function(cl$correct)) next
+    tags_forced[[id]]$light$time <- cl$correct(tags_forced[[id]]$light$time)
+    n_forced <- n_forced + 1L
+    if (isTRUE(params$apply_clock_correction) &&
+        isTRUE(clock_table$accepted[match(id, clock_table$id)])) {
       tags[[id]]$light$time <- cl$correct(tags[[id]]$light$time)
       n_applied <- n_applied + 1L
     }
   }
 }
-message("clock correction applied to ", n_applied, " of ", length(tags), " tags")
+message("clock correction applied to ", n_applied, " of ", length(tags),
+        " tags (forced onto ", n_forced, " for the contrast batch)")
 ```
 
 ## Study domain
@@ -1281,7 +1297,7 @@ panel <- function(tg) list(
     retrieve_lon = vapply(tg, function(g) unname(g$recover[["lon"]]), 0),
     retrieve_lat = vapply(tg, function(g) unname(g$recover[["lat"]]), 0), row.names = NULL))
 P     <- panel(tags)
-P_raw <- panel(tags_raw)
+P_forced <- panel(tags_forced)
 P$locations
 ```
 
@@ -1321,9 +1337,9 @@ fit_hier <- function(pp, terms) timed(TwilightFreeHier(
 
 hier_light     <- cache_rds("fit_hier_light_v2",     fit_hier(P,     NULL))
 hier_fusion    <- cache_rds("fit_hier_fusion_v2",    fit_hier(P,     soft_terms))
-hier_light_raw <- cache_rds("fit_hier_light_raw_v2", fit_hier(P_raw, NULL))
+hier_light_forced <- cache_rds("fit_hier_light_forced_v2", fit_hier(P_forced, NULL))
 
-for (nm in c("hier_light", "hier_fusion", "hier_light_raw"))
+for (nm in c("hier_light", "hier_fusion", "hier_light_forced"))
   cat(sprintf("%-16s %7.1f s (%.1f min)\n", nm, get(nm)$seconds, get(nm)$seconds / 60))
 print(hier_light$value)
 print(hier_fusion$value)
@@ -1470,7 +1486,7 @@ score_smc <- function(fits, label) do.call(rbind, lapply(names(fits), function(i
 knots <- rbind(
   score_hier(hier_light$value,     "light"),
   score_hier(hier_fusion$value,    "light+env"),
-  score_hier(hier_light_raw$value, "light, raw clock"),
+  score_hier(hier_light_forced$value, "light, forced clock"),
   score_grid(grid_light$value,     "light"),
   score_grid(grid_fusion$value,    "light+env"),
   score_smc(ffbs_light$value,      "light"),
@@ -1611,7 +1627,7 @@ contrasts <- do.call(rbind, Filter(Negate(is.null), list(
   paired("hier", "light", "light+env", "sensor fusion (soft)"),
   paired("grid", "light", "light+env", "sensor fusion (hard)"),
   paired("ffbs", "light", "light+env", "sensor fusion (soft)"),
-  paired("hier", "light, raw clock", "light", "clock correction"))))
+  paired("hier", "light", "light, forced clock", "applying the estimated clock"))))
 contrasts
 ```
 
@@ -1619,8 +1635,11 @@ Negative `d_median_km` means the second batch was better. `d_lat_deg` versus
 `d_lon_deg` separates the two mechanisms: SST in the North Pacific varies far
 more strongly with latitude than with longitude, so an SST term that is working
 shows up as a drop in latitude error, concentrated in the equinox window, while
-leaving longitude alone. A clock correction, conversely, should move longitude
-and nothing else.
+leaving longitude alone. A clock shift, conversely, moves longitude and nothing
+else, so `applying the estimated clock` should show up almost entirely in
+`d_lon_deg`. It does, which is the signature that identified it: a timing error
+cannot masquerade as anything but a longitude error, and no other candidate
+explanation for the discrepancy has that shape.
 
 # Timing, and whether fusion pays for itself
 
@@ -1628,14 +1647,14 @@ and nothing else.
 tag_days  <- sum(vapply(tags, function(g) g$days, 0))
 ffbs_days <- sum(vapply(tags[ffbs_ids], function(g) g$days, 0))
 timing <- data.frame(
-  batch  = c("hier_light", "hier_fusion", "hier_light_raw",
+  batch  = c("hier_light", "hier_fusion", "hier_light_forced",
              "grid_light", "grid_fusion", "ffbs_light", "ffbs_fusion"),
   engine = c(rep("TwilightFreeHier", 3), rep("TwilightFreeGrid", 2),
              rep("TwilightFreeSMC(ffbs)", 2)),
   terms  = c("none", "soft bathy+SST+mask", "none",
              "none", "HARD bathy+mask+SST", "none", "soft bathy+SST"),
   n_tags = c(rep(length(tags), 5), rep(length(ffbs_ids), 2)),
-  seconds = round(c(hier_light$seconds, hier_fusion$seconds, hier_light_raw$seconds,
+  seconds = round(c(hier_light$seconds, hier_fusion$seconds, hier_light_forced$seconds,
                     grid_light$seconds, grid_fusion$seconds,
                     ffbs_light$seconds, ffbs_fusion$seconds), 1))
 timing$minutes <- round(timing$seconds / 60, 2)

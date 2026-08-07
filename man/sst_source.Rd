@@ -55,12 +55,44 @@ different product.
 Longitude convention: the default dataset uses -180..180. For a grid that
 crosses the 180 degree line (e.g. the seal example spanning 130 to 185), use
 the 0..360 dataset (`dataset = "ncdcOisst21Agg"`) and a matching grid.
+}
+\section{What the tag is actually measuring}{
+
+The hard part of an SST term is not the reference field, it is the tag value
+you match against it. A thermistor mounted on an animal reads the animal
+about as often as it reads the sea, and the contamination is one-sided, so it
+does not average out.
+
+Measured on ten northern elephant seal deployments against OISST at Argos
+positions, by the depth at which the reading was taken:
+
+\tabular{lrr}{
+  \strong{band} \tab \strong{bias (deg C)} \tab \strong{sd} \cr
+  hauled out    \tab +5.89 (max +23.6)     \tab -    \cr
+  0 to 0.5 m    \tab +0.46                 \tab 2.59 \cr
+  2 to 10 m     \tab -0.05                 \tab 0.44 to 0.72
+}
+
+So the same instrument is an excellent SST sensor when submerged but shallow,
+and unusable at the surface, which is the opposite of the intuition that
+surface readings are the SST-like ones. Select on a depth BAND, never on
+"shallowest". Reducing each knot with a high quantile is worse than useless:
+it selects the warmest and therefore most contaminated reading, and on these
+animals that made latitude error worse rather than better.
+
+A probe on a lead, away from the body, removes most of this. Even then, treat
+SST as a CONSTRAINT rather than an accuracy term: an ocean isotherm is a broad
+band, so a good SST match rules locations out without pinning one down, and in
+a hemisphere-ambiguous season it can rule out the correct band. That is the
+same job [bathy_source()] does with [floor_rule()], and it is better encoded
+the same way.
 
 Note for the calling framework: SST need only be evaluated for knots that
 have a surface temperature reading. `build_aux_matrix()` should skip the
 source (and the fetch) for knots whose reduced tag value is `NA`, since
 [student_rule()] returns no information there anyway.
 }
+
 \examples{
 \dontrun{
 ss <- sst_source()                       # NOAA OISST via ERDDAP
