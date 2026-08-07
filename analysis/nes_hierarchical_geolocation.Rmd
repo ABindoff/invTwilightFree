@@ -752,12 +752,37 @@ message("clock correction applied to ", n_applied, " of ", length(tags),
 
 ## Study domain
 
+The search domain used to be built from the Argos envelope plus padding, which
+let the ground truth choose where the answer was allowed to live. It made no
+difference -- refitting every animal on a domain drawn without any reference to
+these tracks, and again on a deliberately over-wide one, reproduced every fit
+**bit for bit** (median error 208 km, latitude RMSE 2.439, identical to three
+decimal places on all ten animals). The reason is in the diagnostic printed
+below: fitted latitude spans 33.5 to 56.5 degrees, the bounds are 20 and 70, and
+not one knot ever lands within a cell of an edge. The box never binds, because
+the light, the movement prior and the known endpoints localise the track long
+before the boundary does.
+
+It is defined without the ground truth anyway. A domain that is *argued* for is
+worth more than one that is merely harmless, and a reader should not have to take
+the paragraph above on trust. The box below is the eastern and central North
+Pacific: a statement about where this species goes, not about where these ten
+animals went. Widening it costs compute and nothing else, roughly as the square
+of the cell count.
+
 ```{r domain}
 all_lon <- unlist(lapply(tags, function(g) g$argos$lon))
 all_lat <- unlist(lapply(tags, function(g) g$argos$lat))
-bbox <- c(xmin = floor(min(all_lon)) - 8, xmax = ceiling(max(all_lon)) + 4,
-          ymin = floor(min(all_lat)) - 6, ymax = ceiling(max(all_lat)) + 8)
+bbox <- c(xmin = 150, xmax = 250, ymin = 20, ymax = 70)
 bbox[["ymin"]] <- max(bbox[["ymin"]], -89); bbox[["ymax"]] <- min(bbox[["ymax"]], 89)
+
+# Guard rather than assume: the domain is only defensible if it actually
+# contains the animals, and only honest if it never touches them.
+stopifnot(min(all_lon) > bbox[["xmin"]], max(all_lon) < bbox[["xmax"]],
+          min(all_lat) > bbox[["ymin"]], max(all_lat) < bbox[["ymax"]])
+cat(sprintf("domain margin to the nearest Argos fix: %.1f deg W, %.1f deg E, %.1f deg S, %.1f deg N\n",
+            min(all_lon) - bbox[["xmin"]], bbox[["xmax"]] - max(all_lon),
+            min(all_lat) - bbox[["ymin"]], bbox[["ymax"]] - max(all_lat)))
 
 date_rng  <- range(unlist(lapply(tags, function(g) c(g$t0, g$t1))))
 all_dates <- seq(as.Date(as.POSIXct(date_rng[1], origin = "1970-01-01", tz = "UTC")) - 1,
