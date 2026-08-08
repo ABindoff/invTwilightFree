@@ -11,8 +11,7 @@ eval_logpk_grid(
   obs_light,
   calibration,
   likelihood_params,
-  shade_ratio,
-  overcount
+  shade_ratio
 )
 }
 \arguments{

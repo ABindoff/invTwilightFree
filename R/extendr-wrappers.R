@@ -88,9 +88,9 @@ run_particle_filter <- function(unix_times, obs_light, n_particles, start_lat, s
 #' @return Numeric vector of log-likelihoods, one per grid cell
 #' @name eval_logpk_grid
 #' @export
-eval_logpk_grid <- function(lon, lat, unix_times, obs_light, calibration, likelihood_params, shade_ratio, overcount) .Call(wrap__eval_logpk_grid, lon, lat, unix_times, obs_light, calibration, likelihood_params, shade_ratio, overcount)
+eval_logpk_grid <- function(lon, lat, unix_times, obs_light, calibration, likelihood_params, shade_ratio) .Call(wrap__eval_logpk_grid, lon, lat, unix_times, obs_light, calibration, likelihood_params, shade_ratio)
 
-run_grid_hmm <- function(lon, lat, knot_times, obs_times, obs_light, fixed_idx, fixed_lon, fixed_lat, diffusion, trans_prob, calibration, likelihood_params, shade_ratio, overcount, aux_logl) .Call(wrap__run_grid_hmm, lon, lat, knot_times, obs_times, obs_light, fixed_idx, fixed_lon, fixed_lat, diffusion, trans_prob, calibration, likelihood_params, shade_ratio, overcount, aux_logl)
+run_grid_hmm <- function(lon, lat, knot_times, obs_times, obs_light, fixed_idx, fixed_lon, fixed_lat, diffusion, trans_prob, calibration, likelihood_params, shade_ratio, aux_logl) .Call(wrap__run_grid_hmm, lon, lat, knot_times, obs_times, obs_light, fixed_idx, fixed_lon, fixed_lat, diffusion, trans_prob, calibration, likelihood_params, shade_ratio, aux_logl)
 
 #' Run the native single-track block + polish sampler.
 #'

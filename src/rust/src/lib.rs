@@ -130,19 +130,6 @@ fn upper_rate(lam_lo: f64, shade_ratio: f64) -> f64 {
     if shade_ratio.is_finite() && shade_ratio > 0.0 { lam_lo * shade_ratio } else { 2.0 * lam_lo }
 }
 
-/// Effective over-counting of correlated observations within a knot.
-///
-/// The light likelihood multiplies observations as if they were independent,
-/// but records half an hour apart share cloud, sea state and behaviour, so n of
-/// them carry roughly n/overcount observations' worth of information. Dividing
-/// the per-knot log-likelihood by this is the usual composite-likelihood
-/// adjustment: it widens the posterior by about sqrt(overcount) and leaves the
-/// point estimate alone. 1 is the previous behaviour.
-#[inline]
-fn obs_weight(overcount: f64) -> f64 {
-    if overcount.is_finite() && overcount > 0.0 { overcount } else { 1.0 }
-}
-
 /// Copy a calibration slice into a fixed-size array so `Ctx` needs no lifetime
 /// for it. Anything beyond the first four entries is ignored.
 #[inline]
@@ -901,8 +888,7 @@ fn eval_logpk_grid(
     obs_light: &[f64],
     calibration: Vec<f64>,
     likelihood_params: Vec<f64>,
-    shade_ratio: f64,
-    overcount: f64
+    shade_ratio: f64
 ) -> Vec<f64> {
     let n = lon.len();
     let num_obs = unix_times.len();
@@ -935,7 +921,7 @@ fn eval_logpk_grid(
             let den = (1.0 - prob_slab) * spike + prob_slab * slab_density;
             sum_logl += den.ln();
         }
-        logl[i] = sum_logl / obs_weight(overcount);
+        logl[i] = sum_logl;
     }
     
     logl
@@ -956,7 +942,6 @@ fn run_grid_hmm(
     calibration: Vec<f64>,
     likelihood_params: Vec<f64>,
     shade_ratio: f64,
-    overcount: f64,
     aux_logl: Vec<f64>,
 ) -> List {
     let n = lon.len();
@@ -1026,7 +1011,7 @@ fn run_grid_hmm(
                 let den = (1.0 - prob_slab) * spike + prob_slab * slab_density;
                 sum_logl += den.ln();
             }
-            logpk[k][i] += sum_logl / obs_weight(overcount);
+            logpk[k][i] += sum_logl;
         }
     }
 

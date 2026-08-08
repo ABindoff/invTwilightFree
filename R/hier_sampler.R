@@ -269,7 +269,7 @@ TwilightFreeHier <- function(data, locations,
   E <- matrix(1 / n, K, n)
   for (k in seq_len(K)) {
     j <- obin[[k]]
-    ll <- if (length(j)) eval_logpk_grid(cg$lon, cg$lat, ut[j], lsh[j], cal, lp, shade_ratio, 1) else numeric(n)
+    ll <- if (length(j)) eval_logpk_grid(cg$lon, cg$lat, ut[j], lsh[j], cal, lp, shade_ratio) else numeric(n)
     ll <- ll + aux[k, ]
     m <- suppressWarnings(max(ll[is.finite(ll)]))
     if (!is.finite(m)) next
