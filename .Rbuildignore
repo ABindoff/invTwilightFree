@@ -32,3 +32,4 @@
 ^sbc_.*\.png$
 ^analysis$
 ^data/nes_untracked$
+^fvilches$

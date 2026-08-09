@@ -9,7 +9,23 @@
 #' @param end_lon Final longitude (optional, defaults to NA)
 #' @param fixed Optional data frame of fixed locations with columns `time` (POSIXct), `lat`, and `lon`.
 #' @param step_hours Time step for the HMM knots in hours (default 12.0)
-#' @param diffusion Movement diffusion in km/sqrt(day)
+#' @param diffusion Movement diffusion in km/sqrt(day). With `diffusion_lon`
+#'   supplied this is the north-south scale.
+#' @param diffusion_lon Optional east-west diffusion in km/sqrt(day), one value
+#'   per behavioural state. `NULL` (the default) means isotropic movement and is
+#'   bit-identical to previous behaviour.
+#'
+#'   This is not a claim that animals move anisotropically. The movement prior
+#'   also absorbs correlated observation error the light likelihood cannot
+#'   describe, and that error is far larger in latitude than in longitude: on ten
+#'   elephant seal deployments the prior fraction
+#'   \eqn{\pi = \sigma^{-2}/(\sigma^{-2} + \tau^{-2})} is 0.87 in latitude and
+#'   0.30 in longitude under one isotropic scale, so a single value is
+#'   necessarily too loose on one axis and too tight on the other. That is why
+#'   latitude intervals under-cover while longitude intervals over-cover, and why
+#'   no isotropic diffusion calibrates both at once. Inflating process noise to
+#'   stand in for unmodelled correlated observation error is a standard device;
+#'   it should be described as one rather than presented as a movement model.
 #' @param trans_prob Optional transition probability matrix (flattened, row-major) for behavioral states. Defaults to 0.9 diagonal if multiple diffusions are provided.
 #' @param calibration Calibration parameters c(intercept, slope)
 #' @param likelihood_params Likelihood parameters c(lambda, max_light, prob_slab)
@@ -41,7 +57,8 @@ TwilightFreeGrid <- function(date_time, light, grid,
                              likelihood_params = NULL,
                              shade_ratio = 2,
                              terms = list(),
-                             calibrate = FALSE) {
+                             calibrate = FALSE,
+                             diffusion_lon = NULL) {
 
   if(!inherits(date_time, "POSIXct")) stop("date_time must be POSIXct")
 
@@ -184,6 +201,7 @@ TwilightFreeGrid <- function(date_time, light, grid,
     fixed_lon = as.numeric(x0[fixed_vec, 1]),
     fixed_lat = as.numeric(x0[fixed_vec, 2]),
     diffusion = as.numeric(diffusion),
+    diffusion_lon = if (is.null(diffusion_lon)) numeric(0) else as.numeric(diffusion_lon),
     trans_prob = as.numeric(trans_prob),
     calibration = as.numeric(calibration),
     likelihood_params = as.numeric(likelihood_params),

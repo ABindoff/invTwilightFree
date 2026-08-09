@@ -21,3 +21,5 @@ analysis/output/
 analysis/*.html
 data-raw/nes/
 data/nes_untracked/
+
+fvilches/

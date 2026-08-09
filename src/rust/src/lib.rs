@@ -927,6 +927,46 @@ fn eval_logpk_grid(
     logl
 }
 
+/// Log movement kernel for one candidate step, without the normalising constant.
+///
+/// Isotropic (`aniso = false`) uses the great-circle distance and reproduces the
+/// previous behaviour exactly. Anisotropic resolves the step into north-south
+/// and east-west components and gives each its own variance.
+///
+/// This is NOT a claim that animals move anisotropically. The movement prior
+/// also absorbs whatever correlated observation error the likelihood cannot
+/// describe, and for light-based geolocation that error is far larger in
+/// latitude than in longitude: measured on ten elephant seal deployments the
+/// prior fraction pi = sigma^-2 / (sigma^-2 + tau^-2) is 0.87 in latitude and
+/// 0.30 in longitude under a single isotropic scale. One value is therefore
+/// necessarily too loose on one axis and too tight on the other, which is why
+/// latitude intervals under-cover while longitude intervals over-cover, and why
+/// no isotropic diffusion calibrates both at once. Inflating process noise to
+/// stand in for unmodelled correlated observation error is a standard device;
+/// saying so is the honest form of it.
+///
+/// Over a single step (order 100 km) the flat-earth decomposition is accurate to
+/// well under a kilometre, and it is only reached when the two axes are
+/// deliberately given different scales.
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn log_move_kernel(
+    lat_i: f64, lon_i: f64, lat_j: f64, lon_j: f64,
+    lat_rad_i: f64, lat_rad_j: f64,
+    dist: f64, var2_ns: f64, var2_ew: f64, aniso: bool,
+) -> f64 {
+    if !aniso {
+        return -(dist * dist) / var2_ns;
+    }
+    let d_ns = (lat_i - lat_j) * 111.32;
+    let mut dlon_deg = lon_i - lon_j;
+    if dlon_deg > 180.0 { dlon_deg -= 360.0; }
+    if dlon_deg < -180.0 { dlon_deg += 360.0; }
+    let cos_mid = (((lat_rad_i + lat_rad_j) * 0.5).cos()).max(0.05);
+    let d_ew = dlon_deg * 111.32 * cos_mid;
+    -(d_ns * d_ns) / var2_ns - (d_ew * d_ew) / var2_ew
+}
+
 #[extendr]
 fn run_grid_hmm(
     lon: &[f64],
@@ -938,6 +978,7 @@ fn run_grid_hmm(
     fixed_lon: &[f64],
     fixed_lat: &[f64],
     diffusion: Vec<f64>,
+    diffusion_lon: Vec<f64>,
     trans_prob: Vec<f64>,
     calibration: Vec<f64>,
     likelihood_params: Vec<f64>,
@@ -947,6 +988,12 @@ fn run_grid_hmm(
     let n = lon.len();
     let num_states = diffusion.len();
     let k_steps = knot_times.len();
+    // Empty `diffusion_lon` means isotropic; when supplied, `diffusion` is the
+    // north-south scale. See log_move_kernel for why this exists.
+    let aniso = !diffusion_lon.is_empty();
+    if aniso && diffusion_lon.len() != num_states {
+        panic!("diffusion_lon must have one entry per state, like diffusion");
+    }
     
     let lambda = likelihood_params[0];
     let lam_hi = upper_rate(lambda, shade_ratio);
@@ -1058,6 +1105,10 @@ fn run_grid_hmm(
         for s in 0..num_states {
             let sig = diffusion[s] * dt.sqrt();
             if sig > max_sigma { max_sigma = sig; }
+            if aniso {
+                let sig_e = diffusion_lon[s] * dt.sqrt();
+                if sig_e > max_sigma { max_sigma = sig_e; }
+            }
         }
         let threshold_dist = max_sigma * 5.0; 
         
@@ -1067,7 +1118,9 @@ fn run_grid_hmm(
             for s in 0..num_states {
                 let sigma = diffusion[s] * dt.sqrt();
                 let var2 = 2.0 * sigma * sigma;
-                let log_norm_const = - 2.0 * (sigma).ln(); 
+                let sigma_e = if aniso { diffusion_lon[s] * dt.sqrt() } else { sigma };
+                let var2_e = 2.0 * sigma_e * sigma_e;
+                let log_norm_const = -(sigma).ln() - (sigma_e).ln(); 
                 
                 let mut max_val = -1e30;
                 let mut sum_exp = 0.0;
@@ -1088,7 +1141,9 @@ fn run_grid_hmm(
                     
                     if dist > threshold_dist { continue; }
                     
-                    let log_spatial = - (dist * dist) / var2 + log_norm_const;
+                    let log_spatial = log_move_kernel(
+                        lat[i], lon[i], lat[j], lon[j], lat_rad[i], lat_rad[j],
+                        dist, var2, var2_e, aniso) + log_norm_const;
                     
                     for s_prev in 0..num_states {
                         let alpha_prev = alpha[k-1][j * num_states + s_prev];
@@ -1151,6 +1206,10 @@ fn run_grid_hmm(
         for s in 0..num_states {
             let sig = diffusion[s] * dt.sqrt();
             if sig > max_sigma { max_sigma = sig; }
+            if aniso {
+                let sig_e = diffusion_lon[s] * dt.sqrt();
+                if sig_e > max_sigma { max_sigma = sig_e; }
+            }
         }
         let threshold_dist = max_sigma * 5.0; 
         
@@ -1183,9 +1242,13 @@ fn run_grid_hmm(
                         if beta_next > -1e29 {
                             let sigma = diffusion[s_next] * dt.sqrt();
                             let var2 = 2.0 * sigma * sigma;
-                            let log_norm_const = - 2.0 * (sigma).ln();
+                            let sigma_e = if aniso { diffusion_lon[s_next] * dt.sqrt() } else { sigma };
+                            let var2_e = 2.0 * sigma_e * sigma_e;
+                            let log_norm_const = -(sigma).ln() - (sigma_e).ln();
                             
-                            let log_spatial = - (dist * dist) / var2 + log_norm_const;
+                            let log_spatial = log_move_kernel(
+                                lat[i], lon[i], lat[j], lon[j], lat_rad[i], lat_rad[j],
+                                dist, var2, var2_e, aniso) + log_norm_const;
                             let log_t = if num_states > 1 { trans_prob[s * num_states + s_next].ln() } else { 0.0 };
                             
                             let val = beta_next + log_t + log_spatial + logpk[k+1][j];
