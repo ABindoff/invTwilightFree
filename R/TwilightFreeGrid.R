@@ -28,7 +28,53 @@
 #'   it should be described as one rather than presented as a movement model.
 #' @param trans_prob Optional transition probability matrix (flattened, row-major) for behavioral states. Defaults to 0.9 diagonal if multiple diffusions are provided.
 #' @param calibration Calibration parameters c(intercept, slope)
-#' @param likelihood_params Likelihood parameters c(lambda, max_light, prob_slab)
+#' @param lambda_scale Optional per-knot multiplier on the shading rate `lambda`,
+#'   length 1 or one value per knot. `NULL` (default) is a constant rate and is
+#'   bit-identical to previous versions.
+#'
+#'   With a constant `lambda` the model sits at a single point on a bias/coverage
+#'   trade for the whole track. On 29 elephant-seal deployments, tightening `lambda`
+#'   fourfold cut mean latitude bias from 1.54 to 0.93 degrees but drove interval
+#'   coverage from 0.66 to 0.42 and cost 52 km of accuracy. That trade is not uniform
+#'   in time: near an equinox day length hardly varies with latitude, so a sharper
+#'   likelihood buys information where the coverage cost is small, whereas near a
+#'   solstice the day-length signal is abundant and a more forgiving one preserves
+#'   coverage. The per-knot optimum tracks the absolute solar declination
+#'   (within-deployment r = -0.31, p = 5e-5, a factor of 3.7 from equinox to
+#'   solstice). Build a schedule with [declination_lambda_scale()].
+#' @param area_correction Weight each grid cell by its area when applying the
+#'   movement kernel. The kernel is a density on the sphere evaluated on a grid
+#'   uniform in degrees, so turning it into a probability per cell needs the
+#'   cos(latitude) Jacobian. Without it every cell counts equally, and because
+#'   high-latitude cells are smaller they receive weight they have not earned:
+#'   on a 100 by 50 degree grid with a 110 km step, incoming mass tracks
+#'   1/cos(latitude) at r = 0.9999 and is 2.32 times larger at 68 N than 22 N,
+#'   worth 0.204 nats per step toward the pole between 38 N and 50 N. `TRUE` is
+#'   correct and is the default; `FALSE` reproduces results from before the
+#'   correction and is there for comparison, not for use.
+#' @param likelihood_params Likelihood parameters `c(lambda, max_light,
+#'   prob_slab)`, or `c(lambda, max_light, alpha, beta)` for a Beta mean on the
+#'   slab weight, or `c(lambda, max_light, prob_slab, dark_frac,
+#'   shade_ratio_dark, prob_slab_dark)` to enable the darkness regime: where the
+#'   expected curve falls below `dark_frac * max_light`, the upper arm takes
+#'   `shade_ratio_dark` in place of `shade_ratio` and the slab takes
+#'   `prob_slab_dark` in place of `prob_slab`. That is the Kuo-Mallick indicator
+#'   for false light, marginalised rather than sampled, and it exists because
+#'   artificial light and bright moonlight arrive where the model expects
+#'   darkness and nowhere else. The first three entries mean the same thing in
+#'   every form.
+#'
+#'   A seventh entry tempers the light log-likelihood of each window, multiplying
+#'   it by that factor. The engine treats observations as conditionally
+#'   independent given position, and they are not: measured residual
+#'   autocorrelation runs 0.26 to 0.33 over one to four hours, with a further
+#'   0.26 at twenty-four hours. A twelve-hour window of twenty-four readings
+#'   therefore carries far fewer than twenty-four independent pieces of evidence,
+#'   and the product over windows comes out too sharp. Set it to the reciprocal
+#'   of the effective sample size per observation; 1 is the independence
+#'   assumption and the default, and the measured autocorrelation implies about
+#'   0.3. Only the light is tempered, never the auxiliary terms, which are a
+#'   prior on position rather than replicated data.
 #' @param shade_ratio Ratio of the spike's upper-arm decay rate to its shading
 #'   (lower-arm) rate. The default `2` reproduces the historical fixed ratio.
 #'   The shading arm decides how cheaply the model can explain light far below
@@ -58,7 +104,9 @@ TwilightFreeGrid <- function(date_time, light, grid,
                              shade_ratio = 2,
                              terms = list(),
                              calibrate = FALSE,
-                             diffusion_lon = NULL) {
+                             diffusion_lon = NULL,
+                             area_correction = TRUE,
+                             lambda_scale = NULL) {
 
   if(!inherits(date_time, "POSIXct")) stop("date_time must be POSIXct")
 
@@ -141,6 +189,15 @@ TwilightFreeGrid <- function(date_time, light, grid,
   t_step <- if (k_steps > 1) (t_end - t_start) / (k_steps - 1) else 0
   
   knot_times <- t_start + (0:(k_steps-1)) * t_step
+  if (!is.null(lambda_scale)) {
+    if (length(lambda_scale) == 1L) lambda_scale <- rep(lambda_scale, k_steps)
+    if (length(lambda_scale) != k_steps)
+      stop("`lambda_scale` must be length 1 or one value per knot (", k_steps,
+           "); got ", length(lambda_scale),
+           ". Build it with declination_lambda_scale(knot_times).")
+    if (any(!is.finite(lambda_scale) | lambda_scale <= 0))
+      stop("`lambda_scale` entries must be finite and strictly positive")
+  }
   time <- as.POSIXct(knot_times, origin="1970-01-01", tz="UTC")
   
   # Initialize x0 and fixed vectors
@@ -181,6 +238,25 @@ TwilightFreeGrid <- function(date_time, light, grid,
   obs_light_clean <- process_light[valid_obs]
   obs_times_clean <- unix_times[valid_obs]
 
+  # A deprecated `area_prior()` term is the SAME operator as `area_correction`
+  # (verified bit-for-bit: identical latitudes, identical log_z). Supplying both
+  # applies log(cos(lat)) twice, which is silent and moves the fitted latitude a
+  # long way equatorward. Refuse rather than warn -- a warning here is too easy to
+  # miss in a long fit, and the result is wrong rather than merely suboptimal.
+  if (length(terms) > 0 && isTRUE(area_correction)) {
+    dup <- vapply(terms, function(tm) isTRUE(attr(tm$source, "tf_area_prior")),
+                  logical(1))
+    if (any(dup)) {
+      stop("`area_correction = TRUE` already applies the cell-area factor, and ",
+           "term(s) [", paste(vapply(terms[dup], function(tm) tm$name, ""),
+                              collapse = ", "),
+           "] supply the deprecated `area_prior()`, which is the same operator. ",
+           "Applying both doubles it. Drop the `area_prior()` term (recommended), ",
+           "or pass `area_correction = FALSE` to keep the old routing.",
+           call. = FALSE)
+    }
+  }
+
   # Auxiliary location terms (priors, SST, bathymetry, masks) -> additive
   # k_steps x n log-likelihood, flattened row-major (k*n + i) to match Rust.
   if (length(terms) > 0) {
@@ -205,8 +281,10 @@ TwilightFreeGrid <- function(date_time, light, grid,
     trans_prob = as.numeric(trans_prob),
     calibration = as.numeric(calibration),
     likelihood_params = as.numeric(likelihood_params),
+    area_correction = isTRUE(area_correction),
     shade_ratio = as.numeric(shade_ratio),
-    aux_logl = aux_flat
+    aux_logl = aux_flat,
+    lambda_scale = if (is.null(lambda_scale)) numeric(0) else as.numeric(lambda_scale)
   )
   
   # Return combined object. `log_z` is the grid HMM's log marginal likelihood
@@ -222,7 +300,12 @@ TwilightFreeGrid <- function(date_time, light, grid,
     log_z = fit$log_z,
     clock = clock,                # NULL unless calibrate = TRUE; the fitted clock model
     cell_lon = lon_vec,           # candidate cell coordinates (after any NA-mask filter)
-    cell_lat = lat_vec            # columns of fit$posterior correspond to these cells
+    cell_lat = lat_vec,           # columns of fit$posterior correspond to these cells
+    # movement settings, kept so that downstream code can size a margin in km
+    # without the caller having to remember what was used -- see posterior_extent()
+    diffusion = diffusion,
+    step_hours = step_hours,
+    area_correction = isTRUE(area_correction)
   )
   class(res) <- "TwilightFreeGrid"
   return(res)

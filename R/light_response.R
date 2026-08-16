@@ -104,7 +104,10 @@
 #'   fitting a track; the 5th percentile, not the dark level) and `max_light`.
 #'   Those last two, and hence the slope, come from `scale_light` when it is
 #'   supplied. Also returned
-#'   are `calibration_logistic` (`c(floor, amp, z50, scale)`), `width_deg` (the
+#'   are `calibration_logistic` (`c(floor, amp, z50, scale)`, for engines given
+#'   the four-parameter form directly; its `floor` is relative to `baseline`, so
+#'   the whole vector is on the scale of the baselined light the engine sees, and
+#'   is not the raw `dark_level`), `width_deg` (the
 #'   90 to 10 per cent zenith span), `saturate_at` and `zero_at`, and `envelope`,
 #'   the binned envelope the fit was made to. `NULL` if the record is too short
 #'   or too dark to support a fit.
@@ -157,8 +160,15 @@ fit_light_response <- function(time, light, lon, lat,
   # clear-sky light cannot rise as the sun sets. Anchoring on the envelope's own
   # maximum keeps one dim bin at low zenith (fog, a shaded animal) from
   # collapsing everything below it.
+  # Keep the envelope as measured, before the monotone constraint below. The
+  # constraint is right for fitting the transition, but it is wrong at night:
+  # the dark reading drifts slightly UPWARD with zenith on both tag families,
+  # and `cummin` pins it to the running minimum, biasing the fitted floor low.
+  # `light_response_table()` needs the unconstrained shape.
   imax <- which.max(env)
-  keep <- keep[imax:length(keep)]; env <- cummin(env[imax:length(env)])
+  keep <- keep[imax:length(keep)]
+  env_raw <- env[imax:length(env)]
+  env <- cummin(env_raw)
 
   night <- env[keep >= night_zenith]
   floor_l <- if (length(night)) stats::median(night) else min(env)
@@ -209,14 +219,25 @@ fit_light_response <- function(time, light, lon, lat,
   # engine reads: scored against Argos it roughly doubles the error (832 km
   # against 421 km on the same tags). `floor` is still reported, as the measured
   # dark reading, because it is a useful diagnostic of the channel.
+  # `calibration_logistic` must be on the scale the ENGINE works in. The engine
+  # is handed `pmax(0, light - baseline)` and evaluates
+  # `floor + amp / (1 + exp((z - z50) / scale))`, so its floor has to be the dark
+  # level RELATIVE to `baseline`, not the raw dark reading. Supplying the raw
+  # `floor_l` puts the whole expected curve `floor_l - q05` too high at every
+  # zenith: measured across ten elephant-seal deployments that is 18.2 units,
+  # 11.4% of the response range, and it is why the logistic form scored 833 km
+  # against the tangent's 354 and was set aside. That comparison was not a fair
+  # one. Clamped at zero because the observations are, and because a negative
+  # expectation falls outside the spike normaliser's [0, max_light] support.
   out <- list(calibration = c(lin_slope * lin_zero, lin_slope),
-              calibration_logistic = c(floor_l, amp, z50, scale),
+              calibration_logistic = c(max(floor_l - q05, 0), amp, z50, scale),
               baseline = q05, max_light = rng, dark_level = floor_l,
               slope = lin_slope, zero_at = lin_zero,
               saturate_at = z50 - 2 * scale,
               width_deg = 4.394 * scale,
               z50 = z50, scale = scale, floor = floor_l, amp = amp,
-              envelope = data.frame(zenith = keep, light = env),
+              envelope = data.frame(zenith = keep, light = env,
+                                    measured = env_raw),
               n_used = sum(ok))
   class(out) <- "tf_light_response"
   out
@@ -296,7 +317,8 @@ pool_light_responses <- function(geometry, scale = geometry) {
     zero  <- z50_p + 2 * sc_p
     r$z50 <- z50_p; r$scale <- sc_p
     r$calibration <- c(slope * zero, slope)
-    r$calibration_logistic <- c(r$floor, r$amp, z50_p, sc_p)
+    # As in fit_light_response(): relative to `baseline`, not the raw dark level.
+    r$calibration_logistic <- c(max(r$floor - r$baseline, 0), r$amp, z50_p, sc_p)
     r$slope <- slope; r$zero_at <- zero
     r$saturate_at <- z50_p - 2 * sc_p
     r$width_deg <- 4.394 * sc_p
@@ -365,14 +387,151 @@ print.tf_light_response <- function(x, ...) {
 }
 
 
+#' Build a non-parametric light response for an engine
+#'
+#' Turns one or more fitted responses into a lookup table of expected light
+#' against solar zenith, on the baselined scale the engines work in. Pass the
+#' result as `calibration`.
+#'
+#' Use it when neither parametric form fits the channel. On 29 northern
+#' elephant-seal deployments the measured clear-sky envelope holds a daytime
+#' plateau, collapses across about 15 degrees of zenith, then settles on a floor
+#' of roughly a quarter of the range. The two-parameter clamped line cannot
+#' place a floor at all, and forcing it to zero is the single largest
+#' misspecification in that data. A logistic can place one, but is still
+#' committed to a symmetric transition. The table commits to nothing, at the
+#' cost of `length(seq(from, to, by))` numbers instead of two or four.
+#'
+#' The table is built from the envelope as MEASURED, not the monotone-constrained
+#' one used to fit `z50` and `scale`, because the constraint is wrong at night:
+#' the dark reading drifts slightly upward with zenith and `cummin` pins it to
+#' the running minimum.
+#'
+#' @param x A `tf_light_response`, or a list of them to pool across tags of the
+#'   same model. Pooling is by median at each zenith, after each tag's envelope
+#'   is put on its own baselined scale, so tags of different brightness combine
+#'   without one dominating.
+#' @param from,to,by The zenith grid, in degrees. The default spans full day to
+#'   full night at one-degree steps.
+#' @param min_tags When pooling, the number of tags that must contribute to a
+#'   zenith before it is used. Bins below this are filled by interpolation from
+#'   the ones that qualify.
+#' @param flat_outside Optional `c(lo, hi)` zeniths beyond which the response is
+#'   held constant at its value on the boundary. Pass `c(x$saturate_at,
+#'   x$zero_at)` to reuse the window the clamped-linear response already
+#'   implies, which introduces no new tuning constant.
+#'
+#'   This matters more than it looks. A response that varies with zenith
+#'   everywhere lets every observation carry information about position, and on
+#'   elephant-seal records 73 per cent of observations sit outside the
+#'   transition, where the channel is flat, the residual is largest (sd 0.169 of
+#'   the range in daylight against 0.094 at night) and any error in the curve
+#'   converts straight into a position error. The clamped-linear response gets
+#'   its accuracy from being FLAT there, not from being right: scored against
+#'   Argos on 29 deployments it beats a logistic 246 km to 634 despite
+#'   describing the measured curve five times worse. Flattening the table
+#'   outside the transition keeps the measured shape where it carries signal and
+#'   discards it where it carries noise.
+#'
+#' @param max_light The tag's own `max_light`. Supply it whenever more than one
+#'   fit is pooled: the shape is then pooled in units of each contributing tag's
+#'   own range and rescaled to this one, so a shared shape does not impose a
+#'   shared gain. Build one table per tag this way, as
+#'   [pool_light_responses()] gives every tag shared geometry and its own
+#'   intensity scale. `NULL` pools in absolute units, which is only right for a
+#'   single fit.
+#'
+#' @return A numeric vector `c(-1, from, by, y...)`, the leading `-1` marking
+#'   the table form to the engines. Attribute `"n_tags"` records how many fits
+#'   contributed.
+#'
+#' @seealso [fit_light_response()], [pool_light_responses()]
+#' @export
+light_response_table <- function(x, from = 30, to = 140, by = 1, min_tags = 1,
+                                 flat_outside = NULL, max_light = NULL) {
+  if (inherits(x, "tf_light_response")) x <- list(x)
+  x <- Filter(Negate(is.null), x)
+  if (!length(x)) stop("no fitted responses supplied")
+  bad <- !vapply(x, inherits, logical(1), "tf_light_response")
+  if (any(bad)) stop("`x` must contain tf_light_response objects")
+  if (!is.finite(by) || by <= 0) stop("`by` must be positive")
+  grid <- seq(from, to, by = by)
+  if (length(grid) < 2) stop("the zenith grid needs at least two points")
+
+  # Each tag's measured envelope, moved onto the baselined scale the engine sees
+  # and interpolated onto the shared grid. Held constant beyond each tag's own
+  # zenith range rather than extrapolated, since a fitted response says nothing
+  # about zeniths it never observed.
+  #
+  # When `max_light` is given, pool in units of each tag's OWN range and rescale
+  # at the end. Tags of the same model differ in gain: across 29 elephant-seal
+  # deployments `max_light` runs 147 to 175. Pooling in absolute units hands
+  # every tag the same curve, which for the dimmest tags tops out above their
+  # range (so the day saturates and flattens) and for the brightest never
+  # reaches it (so the engine cannot explain their brightest observations as
+  # clear sky). This is the same separation `pool_light_responses()` makes
+  # between shared geometry and per-tag intensity, and the same error that cost
+  # 473 km against 363 when the tangent's slope was tied to `amp`.
+  norm <- !is.null(max_light)
+  if (norm && (!is.numeric(max_light) || length(max_light) != 1L ||
+               !is.finite(max_light) || max_light <= 0))
+    stop("`max_light` must be a single positive number")
+  m <- vapply(x, function(r) {
+    e <- r$envelope
+    y <- if (!is.null(e$measured)) e$measured else e$light
+    v <- pmax(y - r$baseline, 0)
+    if (norm) v <- v / r$max_light
+    stats::approx(e$zenith, v, grid, rule = 2)$y
+  }, numeric(length(grid)))
+  if (is.null(dim(m))) m <- matrix(m, ncol = 1)
+
+  n_at <- rowSums(is.finite(m))
+  yy <- apply(m, 1, stats::median, na.rm = TRUE)
+  ok <- n_at >= min_tags & is.finite(yy)
+  if (sum(ok) < 2) stop("too few zeniths met `min_tags`")
+  if (any(!ok)) yy <- stats::approx(grid[ok], yy[ok], grid, rule = 2)$y
+
+  if (!is.null(flat_outside)) {
+    if (length(flat_outside) != 2L || !all(is.finite(flat_outside)) ||
+        flat_outside[1] >= flat_outside[2])
+      stop("`flat_outside` must be c(lo, hi) with lo < hi")
+    lo <- which.min(abs(grid - flat_outside[1]))
+    hi <- which.min(abs(grid - flat_outside[2]))
+    yy[seq_len(lo)] <- yy[lo]
+    yy[hi:length(yy)] <- yy[hi]
+  }
+
+  if (norm) yy <- yy * max_light
+
+  out <- c(-1, from, by, pmax(yy, 0))
+  attr(out, "n_tags") <- length(x)
+  attr(out, "flat_outside") <- flat_outside
+  attr(out, "max_light") <- max_light
+  out
+}
+
+
 # R-side twin of the Rust `expected_light()`. The two must agree exactly, since
 # the clock calibration profiles the same likelihood the engines evaluate.
-# Length 2 = clamped linear (the original model); length 4 = logistic.
+# Length 2 = clamped linear (the original model); length 4 = logistic; a
+# negative leading element = the lookup table `c(-1, z_min, dz, y...)`.
 .tf_expected_light <- function(z, calibration, max_light) {
+  if (calibration[1] < 0 && length(calibration) >= 5) {
+    z_min <- calibration[2]
+    dz <- calibration[3]
+    if (abs(dz) < 1e-9) dz <- 1e-9
+    y <- calibration[-(1:3)]
+    n <- length(y)
+    pos <- pmin(pmax((z - z_min) / dz, 0), n - 1)
+    i <- pmin(floor(pos), n - 2)
+    f <- pos - i
+    return(pmin(pmax(y[i + 1] * (1 - f) + y[i + 2] * f, 0), max_light))
+  }
   if (length(calibration) >= 4) {
     s <- calibration[4]
     if (abs(s) < 1e-9) s <- 1e-9
-    calibration[1] + calibration[2] / (1 + exp((z - calibration[3]) / s))
+    pmin(pmax(calibration[1] +
+                calibration[2] / (1 + exp((z - calibration[3]) / s)), 0), max_light)
   } else {
     pmin(pmax(calibration[1] - calibration[2] * z, 0), max_light)
   }

@@ -1,0 +1,97 @@
+#' A shading-rate schedule from solar declination
+#'
+#' Builds the per-knot `lambda_scale` vector for [TwilightFreeGrid()], tightening the
+#' shading rate near the equinoxes and relaxing it near the solstices.
+#'
+#' @details
+#' A constant shading rate puts the model at one point on a bias/coverage trade for a
+#' whole deployment. Measured on 29 elephant-seal tracks, tightening `lambda` fourfold
+#' cut mean latitude bias from 1.54 to 0.93 degrees while driving interval coverage
+#' from 0.66 to 0.42 and costing 52 km of accuracy. Neither end of that trade is
+#' obviously right, because the trade itself moves through the year.
+#'
+#' Latitude is inferred from day length. Near an equinox day length is close to twelve
+#' hours everywhere, so latitude is barely identified and the posterior is wide
+#' whatever the model does -- a sharper likelihood buys information there at little
+#' cost in coverage. Near a solstice day length varies strongly with latitude, the
+#' signal is abundant, and a forgiving likelihood keeps intervals honest. The per-knot
+#' shading rate that removes the latitude bias behaves accordingly: regressed on
+#' absolute solar declination it falls by 0.081 in log2 per degree, a factor of about
+#' 3.7 from equinox to solstice, with a within-deployment correlation of -0.31
+#' (p = 5e-5, 167 deployment-months). Within-deployment is the meaningful figure: it
+#' cannot be produced by tags differing from one another, only by the rate genuinely
+#' moving through the year.
+#'
+#' The schedule is normalised to a geometric mean of 1 over the supplied knots, so it
+#' redistributes the shading rate through the deployment without changing its overall
+#' level. Set the level with `likelihood_params[1]` as before.
+#'
+#' @section What is and is not established:
+#' The slope is measured on 29 deployments that share one phenology -- all depart in
+#' May or June and return in January or February. Time of year, the animal's latitude
+#' and its behavioural state are therefore completely confounded in that estimate, and
+#' it cannot be shown from those data that the driver is declination rather than
+#' latitude or behaviour. What is independent of the confound is the reasoning above:
+#' day length carries less latitude information near an equinox as a matter of
+#' geometry, whatever the animal is doing. Treat `slope` as a default worth testing on
+#' your own data rather than as a physical constant, and `slope = 0` recovers the
+#' constant-rate behaviour exactly.
+#'
+#' @param knot_times Knot times, `POSIXct` or seconds since epoch. A fit's knots are
+#'   `fit$fit$time`.
+#' @param slope Change in `log2(lambda)` per degree of absolute declination
+#'   (default -0.081, as measured). `0` gives a constant schedule.
+#' @param max_ratio Largest permitted ratio between the highest and lowest multiplier
+#'   (default 6). The measured span is about 3.7; the cap stops an unusually long
+#'   deployment, or a steeper `slope`, from producing an extreme rate at one end.
+#' @return Numeric vector, one multiplier per knot, geometric mean 1, with attributes
+#'   `declination` and `slope`.
+#' @seealso [TwilightFreeGrid()], [solar_declination()]
+#' @examples
+#' k <- seq(as.POSIXct("2021-06-01", tz = "UTC"), by = "12 hours", length.out = 400)
+#' s <- declination_lambda_scale(k)
+#' range(s)
+#' @export
+declination_lambda_scale <- function(knot_times, slope = -0.081, max_ratio = 6) {
+  t <- if (inherits(knot_times, "POSIXct")) as.numeric(knot_times) else as.numeric(knot_times)
+  if (!length(t) || any(!is.finite(t))) stop("`knot_times` must be finite")
+  if (!is.finite(slope)) stop("`slope` must be finite")
+  if (max_ratio < 1) stop("`max_ratio` must be at least 1")
+
+  dec <- solar_declination(t)
+  s <- 2^(slope * (abs(dec) - mean(abs(dec))))
+  # normalise the LEVEL away: this argument redistributes the rate through time,
+  # it does not set it. Otherwise a change of schedule would silently also change
+  # the overall shading rate and the two effects could not be told apart.
+  s <- s / exp(mean(log(s)))
+  if (max(s) / min(s) > max_ratio) {
+    # squeeze in log space about the (already unit) geometric mean
+    f <- log(max_ratio) / log(max(s) / min(s))
+    s <- exp(log(s) * f)
+    s <- s / exp(mean(log(s)))
+  }
+  attr(s, "declination") <- dec
+  attr(s, "slope") <- slope
+  s
+}
+
+
+#' Solar declination
+#'
+#' Declination of the sun in degrees, from the standard Fourier series (Spencer 1971).
+#' Positive in the northern summer, +/- 23.44 at the solstices, zero at the equinoxes.
+#'
+#' @param times `POSIXct` or seconds since epoch.
+#' @return Declination in degrees.
+#' @seealso [declination_lambda_scale()]
+#' @examples
+#' solar_declination(as.POSIXct(c("2021-06-21", "2021-09-22"), tz = "UTC"))
+#' @export
+solar_declination <- function(times) {
+  t <- if (inherits(times, "POSIXct")) as.numeric(times) else as.numeric(times)
+  doy <- as.numeric(format(as.POSIXct(t, origin = "1970-01-01", tz = "UTC"), "%j"))
+  g <- 2 * pi / 365 * (doy - 1)
+  (0.006918 - 0.399912 * cos(g) + 0.070257 * sin(g) -
+     0.006758 * cos(2 * g) + 0.000907 * sin(2 * g) -
+     0.002697 * cos(3 * g) + 0.00148 * sin(3 * g)) * 180 / pi
+}

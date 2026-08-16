@@ -85,12 +85,21 @@ run_particle_filter <- function(unix_times, obs_light, n_particles, start_lat, s
 #'   model, or `c(floor, amp, z50, scale)` for the logistic model (see details in
 #'   `fit_light_response`). Length selects the model.
 #' @param likelihood_params c(lambda, max_light, prob_slab) or c(lambda, max_light, alpha, beta)
+#' @param shade_ratio Ratio of the spike's upper-arm decay rate to its shading
+#'   (lower-arm) rate. Pass **2** to match `TwilightFreeGrid()`'s default; the
+#'   engines' own value if you are reproducing a specific fit. There is no
+#'   cell-count argument -- the number of cells is `length(lon)` -- so a value
+#'   intended as `n_cells` silently lands here instead, and a large `shade_ratio`
+#'   makes observations above the expected curve enormously expensive, which
+#'   biases the profile toward positions that over-predict light (poleward in
+#'   summer). Always profile a matched-response control: it peaks off the truth
+#'   when this is wrong.
 #' @return Numeric vector of log-likelihoods, one per grid cell
 #' @name eval_logpk_grid
 #' @export
 eval_logpk_grid <- function(lon, lat, unix_times, obs_light, calibration, likelihood_params, shade_ratio) .Call(wrap__eval_logpk_grid, lon, lat, unix_times, obs_light, calibration, likelihood_params, shade_ratio)
 
-run_grid_hmm <- function(lon, lat, knot_times, obs_times, obs_light, fixed_idx, fixed_lon, fixed_lat, diffusion, diffusion_lon, trans_prob, calibration, likelihood_params, shade_ratio, aux_logl) .Call(wrap__run_grid_hmm, lon, lat, knot_times, obs_times, obs_light, fixed_idx, fixed_lon, fixed_lat, diffusion, diffusion_lon, trans_prob, calibration, likelihood_params, shade_ratio, aux_logl)
+run_grid_hmm <- function(lon, lat, knot_times, obs_times, obs_light, fixed_idx, fixed_lon, fixed_lat, diffusion, diffusion_lon, trans_prob, calibration, likelihood_params, shade_ratio, aux_logl, area_correction, lambda_scale) .Call(wrap__run_grid_hmm, lon, lat, knot_times, obs_times, obs_light, fixed_idx, fixed_lon, fixed_lat, diffusion, diffusion_lon, trans_prob, calibration, likelihood_params, shade_ratio, aux_logl, area_correction, lambda_scale)
 
 #' Run the native single-track block + polish sampler.
 #'

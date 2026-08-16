@@ -139,6 +139,18 @@ fn cal_array(c: &[f64]) -> [f64; 4] {
     a
 }
 
+/// The block samplers carry the calibration in a fixed `[f64; 4]`, so they
+/// cannot hold the lookup-table form. Truncating one would leave
+/// `[-1, z_min, dz, y_0]`, which the length-4 branch would then read as a
+/// logistic with a floor of -1: silently wrong rather than absent. Refuse it.
+fn reject_table_calibration(c: &[f64], who: &str) {
+    if !c.is_empty() && c[0] < 0.0 {
+        panic!("{} cannot use a lookup-table calibration: it carries at most \
+                four parameters. Use TwilightFreeGrid() or TwilightFreeSMC(), \
+                or supply `calibration_logistic`.", who);
+    }
+}
+
 /// Clear-sky expected light as a function of solar zenith angle.
 ///
 /// Two response models, selected by the length of `calibration`, so that
@@ -158,13 +170,55 @@ fn cal_array(c: &[f64]) -> [f64; 4] {
 ///   falling off a cliff, and it degenerates to the clamped line as `scale`
 ///   goes to zero. Archival tags differ in this response even within a batch,
 ///   so it is fitted per tag rather than assumed.
+///
+/// * leading negative — `c(-1, z_min, dz, y_0, ..., y_{n-1})`: a lookup table,
+///   linearly interpolated on the uniform zenith grid and held constant beyond
+///   either end. Built by `light_response_table()`. Available on the grid and
+///   particle engines; the block samplers carry only four parameters and reject
+///   it explicitly.
 #[inline]
 fn expected_light(z: f64, calibration: &[f64], max_light: f64) -> f64 {
+    // A negative leading element marks the LOOKUP-TABLE form:
+    //   [-1, z_min, dz, y_0, ..., y_{n-1}]
+    // evaluated by linear interpolation on the uniform zenith grid, held
+    // constant beyond either end. The sentinel is unambiguous because the
+    // linear form's intercept is `slope * zero_at` and the logistic form's
+    // floor is clamped at zero, so neither can lead with a negative.
+    //
+    // This exists because the measured response is neither of the parametric
+    // shapes: on 29 elephant-seal deployments the clear-sky envelope holds a
+    // daytime plateau, collapses across roughly 15 degrees of zenith, and then
+    // settles on a floor of a quarter of the range. A clamped line has two
+    // parameters and cannot place a floor at all; a logistic can, but is still
+    // committed to a symmetric transition. The table commits to nothing.
+    if calibration[0] < 0.0 && calibration.len() >= 5 {
+        let z_min = calibration[1];
+        let dz = if calibration[2].abs() < 1e-9 { 1e-9 } else { calibration[2] };
+        let y = &calibration[3..];
+        let n = y.len();
+        let pos = (z - z_min) / dz;
+        let v = if pos <= 0.0 {
+            y[0]
+        } else if pos >= (n - 1) as f64 {
+            y[n - 1]
+        } else {
+            let i = pos.floor() as usize;
+            let f = pos - i as f64;
+            y[i] * (1.0 - f) + y[i + 1] * f
+        };
+        return v.max(0.0).min(max_light);
+    }
     if calibration.len() >= 4 {
         let (floor, amp, z50, scale) = (calibration[0], calibration[1],
                                         calibration[2], calibration[3]);
         let s = if scale.abs() < 1e-9 { 1e-9 } else { scale };
-        floor + amp / (1.0 + ((z - z50) / s).exp())
+        // Clamped like the linear branch. `floor + amp` is `top - baseline`,
+        // where `top` is the envelope's brightest bin, while `max_light` is
+        // `q95 - q05` over the whole record; for a diving animal most of the
+        // record is dark, so the former exceeds the latter (3.4% on average
+        // across ten elephant-seal deployments, on all ten). Left unclamped,
+        // `spike_normaliser`'s upper mass term goes negative.
+        (floor + amp / (1.0 + ((z - z50) / s).exp())).max(0.0).min(max_light)
     } else {
         (calibration[0] - calibration[1] * z).max(0.0).min(max_light)
     }
@@ -190,6 +244,131 @@ fn spike_density(obs: f64, expected: f64, lam_lo: f64, lam_hi: f64, max_light: f
     raw / spike_normaliser(expected, lam_lo, lam_hi, max_light)
 }
 
+/// The light mixture, assembled once from `likelihood_params` and applied
+/// identically by every engine.
+///
+/// The model is a Kuo-Mallick indicator, marginalised rather than sampled: each
+/// observation is either genuine, with the asymmetric spike about the expected
+/// clear-sky curve, or false, with a uniform slab over the tag's range. Writing
+/// the marginal `(1-pi)*spike + pi*slab` directly is the Rao-Blackwellised form,
+/// and it is what makes the indicator usable at all: sampled, a per-observation
+/// binary latent mixes badly, since flipping one indicator barely moves the
+/// posterior while flipping the thousands that a night contains coherently is a
+/// move the sampler never proposes.
+///
+/// # The darkness regime
+///
+/// A single `pi` cannot do the job the indicator was invented for. Contamination
+/// that matters is a NIGHT phenomenon: artificial light, and bright moonlight,
+/// arriving where the model expects darkness. In daylight the same sources are
+/// swamped and the mixture has nothing to absorb. So a global `pi` must either
+/// stay small, and let a moonlit night drag the track, or grow large enough to
+/// cover the worst night and blunt the likelihood everywhere else.
+///
+/// Where the expected curve has fallen below `dark_at`, the model therefore
+/// switches to its own upper rate and slab weight:
+///
+/// * the **upper arm sharpens**. Below the dark envelope a night reading is
+///   unremarkable, since a diving animal reads anything from zero upward, but
+///   ABOVE it the reading is evidence that this position is not in darkness.
+///   Measured on 29 elephant-seal deployments, the share of observations
+///   exceeding the dark envelope runs 94% through 94-98 degrees, 41% at 98-102,
+///   and 9% beyond 102: a tenfold odds ratio sitting exactly where day length is
+///   defined. That is the day-length signal, stated deliberately.
+/// * the **slab weight rises**, to absorb the contamination that sharpening
+///   would otherwise convert into a hard penalty. In the same data 14.5% of
+///   deep-night observations exceed the dark envelope and 2.0% exceed one and a
+///   half times it, but the worst tag reaches 8.7% against a median of 1.8%, so
+///   the weight has to cover the tail rather than the middle.
+///
+/// This replaces an accident. The clamped-linear response expects ZERO at night
+/// against a measured dark envelope near 40, so every night reading is charged
+/// on the upper arm: 75% of the entire penalty budget, of which 69% is the
+/// sensor's own floor rather than anything anomalous. That mis-specification is
+/// load-bearing, because the charge differs between a position predicting night
+/// and one predicting twilight, which is day length arrived at by the wrong
+/// route. Correct the floor alone and accuracy collapses from 242 km to 451.
+/// The indicator is meant to carry that information openly, with a rate and a
+/// contamination budget that can be stated and checked.
+#[derive(Clone, Copy)]
+struct LightMix {
+    lam_lo: f64,
+    lam_hi: f64,
+    max_light: f64,
+    prob_slab: f64,
+    /// Expected light at or below this is the darkness regime. `f64::MIN`
+    /// disables it, reproducing the single-regime model exactly.
+    dark_at: f64,
+    lam_hi_dark: f64,
+    prob_slab_dark: f64,
+    /// Multiplies the light log-likelihood of a whole window.
+    ///
+    /// The engines treat observations as conditionally independent given
+    /// position. They are not: on elephant-seal records the residual
+    /// autocorrelation runs 0.26-0.33 over one to four hours, with a further
+    /// 0.26 at twenty-four hours from a dawn-versus-dusk asymmetry. So a
+    /// twelve-hour window of twenty-four readings carries far fewer than
+    /// twenty-four independent pieces of evidence, and the product over windows
+    /// comes out too sharp.
+    ///
+    /// The symptom is a reversal that cannot be explained anywhere else. Per
+    /// window the emission is CONSERVATIVE, claiming 1.5 to 1.8 times less
+    /// knowledge than the scatter of its own posterior means shows it has; at
+    /// track level the posterior is OVER-confident, covering 0.72 against a
+    /// nominal 0.95. Conservative inputs and an over-confident output can only
+    /// be reconciled in how the windows are combined.
+    ///
+    /// `temper` is the reciprocal of the effective sample size per observation:
+    /// 1.0 keeps the independence assumption and is bit-identical to before,
+    /// and the measured autocorrelation implies roughly 0.3.
+    temper: f64,
+}
+
+impl LightMix {
+    /// `lp` is `c(lambda, max_light, prob_slab)`, or `c(lambda, max_light,
+    /// alpha, beta)` for a Beta mean on the slab weight, or
+    /// `c(lambda, max_light, prob_slab, dark_frac, shade_ratio_dark,
+    /// prob_slab_dark)` to enable the darkness regime, where `dark_frac` is a
+    /// fraction of `max_light`.
+    fn new(lp: &[f64], shade_ratio: f64) -> LightMix {
+        let lam_lo = lp[0];
+        let max_light = lp[1];
+        let prob_slab = if lp.len() == 4 { lp[2] / (lp[2] + lp[3]) } else { lp[2] };
+        let mut m = LightMix {
+            lam_lo,
+            lam_hi: upper_rate(lam_lo, shade_ratio),
+            max_light,
+            prob_slab,
+            dark_at: f64::MIN,
+            lam_hi_dark: 0.0,
+            prob_slab_dark: 0.0,
+            temper: 1.0,
+        };
+        if lp.len() >= 6 {
+            m.dark_at = lp[3] * max_light;
+            m.lam_hi_dark = upper_rate(lam_lo, lp[4]);
+            m.prob_slab_dark = lp[5];
+        }
+        if lp.len() >= 7 && lp[6] > 0.0 { m.temper = lp[6]; }
+        m
+    }
+
+    /// Marginal log-density of one observation, indicator integrated out.
+    #[inline]
+    fn logden(&self, obs: f64, expected: f64) -> f64 {
+        let (lam_hi, prob_slab) = if expected <= self.dark_at {
+            (self.lam_hi_dark, self.prob_slab_dark)
+        } else {
+            (self.lam_hi, self.prob_slab)
+        };
+        let spike = spike_density(obs, expected, self.lam_lo, lam_hi, self.max_light);
+        // The temper is applied HERE, not at the call sites. Tempering each
+        // observation is identical to tempering the window sum, the log being
+        // linear, and this way no engine can be added later that forgets it.
+        self.temper * ((1.0 - prob_slab) * spike + prob_slab / self.max_light).ln()
+    }
+}
+
 /// Calculate the log-likelihood of observed light given proposed tracks.
 /// uses a spike-and-slab model for false light events.
 ///
@@ -210,25 +389,11 @@ fn light_log_likelihood(
     prob_slab: f64,
     shade_ratio: f64,
 ) -> f64 {
-    let lam_hi = upper_rate(lambda, shade_ratio);
+    let mix = LightMix::new(&[lambda, max_light, prob_slab], shade_ratio);
     let mut log_lik = 0.0;
-    
-    // Density of the slab (uniform distribution over possible light values)
-    let slab_density = 1.0 / max_light;
-    
     for i in 0..obs_light.len() {
-        let obs = obs_light[i];
-        let exp = expected_light[i];
-        
-        let spike = spike_density(obs, exp, lambda, lam_hi, max_light);
-
-        // Mixture model: (1 - pi) * True Light + pi * False Light
-        let marginal_density = (1.0 - prob_slab) * spike + prob_slab * slab_density;
-        
-        // Accumulate log likelihood
-        log_lik += marginal_density.ln();
+        log_lik += mix.logden(obs_light[i], expected_light[i]);
     }
-    
     log_lik
 }
 
@@ -369,6 +534,10 @@ fn run_particle_filter(
     let use_hyperprior = likelihood_params.len() >= 4;
     let prior_alpha = if use_hyperprior { likelihood_params[2] } else { 1.0 };
     let prior_beta = if use_hyperprior { likelihood_params[3] } else { 1.0 };
+    // The particle filter is deliberately NOT on LightMix. It resamples
+    // `prob_slab` per particle, so it already carries a per-track contamination
+    // estimate, and a fixed darkness-regime weight would fight that estimate
+    // rather than refine it. Use TwilightFreeGrid() for the darkness regime.
     let slab_density = 1.0 / max_light;
     let earth_radius = 6371.0; // km
 
@@ -877,6 +1046,15 @@ fn run_particle_filter(
 ///   model, or `c(floor, amp, z50, scale)` for the logistic model (see details in
 ///   `fit_light_response`). Length selects the model.
 /// @param likelihood_params c(lambda, max_light, prob_slab) or c(lambda, max_light, alpha, beta)
+/// @param shade_ratio Ratio of the spike's upper-arm decay rate to its shading
+///   (lower-arm) rate. Pass **2** to match `TwilightFreeGrid()`'s default; the
+///   engines' own value if you are reproducing a specific fit. There is no
+///   cell-count argument -- the number of cells is `length(lon)` -- so a value
+///   intended as `n_cells` silently lands here instead, and a large `shade_ratio`
+///   makes observations above the expected curve enormously expensive, which
+///   biases the profile toward positions that over-predict light (poleward in
+///   summer). Always profile a matched-response control: it peaks off the truth
+///   when this is wrong.
 /// @return Numeric vector of log-likelihoods, one per grid cell
 /// @name eval_logpk_grid
 /// @export
@@ -892,17 +1070,8 @@ fn eval_logpk_grid(
 ) -> Vec<f64> {
     let n = lon.len();
     let num_obs = unix_times.len();
-    let lambda = likelihood_params[0];
-    let lam_hi = upper_rate(lambda, shade_ratio);
-    let max_light = likelihood_params[1];
-    let prob_slab = if likelihood_params.len() > 3 {
-        let alpha = likelihood_params[2];
-        let beta = likelihood_params[3];
-        alpha / (alpha + beta)
-    } else {
-        likelihood_params[2]
-    };
-    let slab_density = 1.0 / max_light;
+    let mix = LightMix::new(&likelihood_params, shade_ratio);
+    let max_light = mix.max_light;
 
     let mut logl = vec![0.0; n];
 
@@ -916,10 +1085,7 @@ fn eval_logpk_grid(
             let (sd, cd, ra, gmst) = eph[j];
             let zenith = zenith_from_ephem(sd, cd, ra, gmst, lon[i], lat[i]);
             let expected = expected_light(zenith, &calibration, max_light);
-            let obs = obs_light[j];
-            let spike = spike_density(obs, expected, lambda, lam_hi, max_light);
-            let den = (1.0 - prob_slab) * spike + prob_slab * slab_density;
-            sum_logl += den.ln();
+            sum_logl += mix.logden(obs_light[j], expected);
         }
         logl[i] = sum_logl;
     }
@@ -950,6 +1116,28 @@ fn eval_logpk_grid(
 /// deliberately given different scales.
 #[inline]
 #[allow(clippy::too_many_arguments)]
+/// Log area of a grid cell at this latitude, up to a constant.
+///
+/// The movement kernel is a density on the SPHERE, evaluated on a grid uniform
+/// in DEGREES. Turning the density into a probability per cell needs the cell's
+/// area, which carries a cos(latitude) Jacobian. Leaving it out treats every
+/// cell as equal area, and since high-latitude cells are smaller it hands them
+/// weight they have not earned.
+///
+/// Measured on the 100x50 degree grid this package's elephant-seal analysis
+/// uses, with a 110 km step: the mass flowing into a destination cell from a
+/// uniform source tracks 1/cos(latitude) with r = 0.9999, and runs 2.32 times
+/// higher at 68 N than at 22 N. Between 38 N and 50 N, the range these animals
+/// occupy, it is worth 0.204 nats PER STEP toward the pole, so about 98 nats
+/// over a 480-knot track if the light does not oppose it. The light does oppose
+/// it, which is why the symptom was a bias of degrees rather than a collapse to
+/// the pole, and why weakening the light by tempering sent the fitted latitude
+/// marching north past the middle of the search domain.
+#[inline]
+fn log_cell_area(lat_rad: f64) -> f64 {
+    lat_rad.cos().max(1e-6).ln()
+}
+
 fn log_move_kernel(
     lat_i: f64, lon_i: f64, lat_j: f64, lon_j: f64,
     lat_rad_i: f64, lat_rad_j: f64,
@@ -984,6 +1172,8 @@ fn run_grid_hmm(
     likelihood_params: Vec<f64>,
     shade_ratio: f64,
     aux_logl: Vec<f64>,
+    area_correction: bool,
+    lambda_scale: Vec<f64>,
 ) -> List {
     let n = lon.len();
     let num_states = diffusion.len();
@@ -995,18 +1185,41 @@ fn run_grid_hmm(
         panic!("diffusion_lon must have one entry per state, like diffusion");
     }
     
-    let lambda = likelihood_params[0];
-    let lam_hi = upper_rate(lambda, shade_ratio);
-    let max_light = likelihood_params[1];
-    let prob_slab = if likelihood_params.len() > 3 {
-        let alpha = likelihood_params[2];
-        let beta = likelihood_params[3];
-        alpha / (alpha + beta)
-    } else {
-        likelihood_params[2]
-    };
-    let slab_density = 1.0 / max_light;
+    let mix = LightMix::new(&likelihood_params, shade_ratio);
+    let max_light = mix.max_light;
     let earth_radius = 6371.0;
+
+    // Per-knot shading rate. `lambda_scale` multiplies lambda at each knot, so the
+    // model can be sharp where day length is informative and forgiving where it is
+    // not. Empty means constant, and is bit-identical to the previous behaviour --
+    // the constant `mix` above is then the only one built.
+    //
+    // Why this is worth a parameter: with a constant lambda the model sits at ONE
+    // point on a bias/coverage trade for the whole track. Measured on 29 elephant
+    // seals, tightening lambda cut latitude bias from 1.54 to 0.93 degrees but drove
+    // coverage from 0.66 down to 0.42 and cost 52 km. The trade is not uniform in
+    // time: near an equinox day length barely varies with latitude, so a sharp
+    // likelihood buys information where the coverage cost is small, while near a
+    // solstice the signal is abundant and a forgiving one keeps coverage. The
+    // per-knot optimum tracks |solar declination| (within-deployment r = -0.31,
+    // a factor of 3.7 from equinox to solstice), which R computes and passes here.
+    if !lambda_scale.is_empty() {
+        if lambda_scale.len() != k_steps {
+            panic!("lambda_scale must be empty or have one entry per knot ({k_steps})");
+        }
+        if lambda_scale.iter().any(|v| !(*v > 0.0) || !v.is_finite()) {
+            panic!("lambda_scale entries must be finite and strictly positive");
+        }
+    }
+    let mixes: Vec<LightMix> = if lambda_scale.is_empty() {
+        Vec::new()
+    } else {
+        (0..k_steps).map(|k| {
+            let mut lp = likelihood_params.clone();
+            lp[0] *= lambda_scale[k];
+            LightMix::new(&lp, shade_ratio)
+        }).collect()
+    };
 
     let lon_rad: Vec<f64> = lon.iter().map(|x| x.to_radians()).collect();
     let lat_rad: Vec<f64> = lat.iter().map(|x| x.to_radians()).collect();
@@ -1043,6 +1256,7 @@ fn run_grid_hmm(
         }
 
         if obs_in_k.is_empty() { continue; }
+        let mix_k = if mixes.is_empty() { &mix } else { &mixes[k] };
 
         for i in 0..n {
             // Already ruled out by a hard auxiliary constraint: the light
@@ -1054,9 +1268,7 @@ fn run_grid_hmm(
                 let zenith = zenith_from_ephem(sd, cd, ra, gmst, lon[i], lat[i]);
                 let expected = expected_light(zenith, &calibration, max_light);
                 let obs = obs_light[j];
-                let spike = spike_density(obs, expected, lambda, lam_hi, max_light);
-                let den = (1.0 - prob_slab) * spike + prob_slab * slab_density;
-                sum_logl += den.ln();
+                sum_logl += mix_k.logden(obs, expected);
             }
             logpk[k][i] += sum_logl;
         }
@@ -1089,7 +1301,9 @@ fn run_grid_hmm(
     for i in 0..n {
         for s in 0..num_states {
             if logpk[0][i] > -1e29 {
-                alpha[0][i * num_states + s] = logpk[0][i] - (n as f64 * num_states as f64).ln();
+                alpha[0][i * num_states + s] = logpk[0][i]
+                    - (n as f64 * num_states as f64).ln()
+                    + if area_correction { log_cell_area(lat_rad[i]) } else { 0.0 };
             }
         }
     }
@@ -1162,7 +1376,11 @@ fn run_grid_hmm(
                 }
                 
                 if sum_exp > 0.0 {
-                    alpha[k][i * num_states + s] = logpk[k][i] + max_val + sum_exp.ln();
+                    // The destination cell here is `i`, and its area is constant
+                    // across the source loop, so it is applied once to the
+                    // accumulated value rather than inside the inner sum.
+                    alpha[k][i * num_states + s] = logpk[k][i] + max_val + sum_exp.ln()
+                        + if area_correction { log_cell_area(lat_rad[i]) } else { 0.0 };
                 }
             }
         }
@@ -1174,6 +1392,13 @@ fn run_grid_hmm(
     // the total probability of the observations under the model and any priors
     // injected via aux_logl. Use it for model comparison, e.g. a hemisphere
     // Bayes factor: run twice under opposite priors and difference the logZ.
+    //
+    // ONLY same-grid AND same-area_correction. The flag changes the base measure,
+    // not just the prior: with it on, the initial distribution no longer sums to
+    // one and logZ picks up a constant of about ln(mean cos(lat)) -- measured at
+    // -0.32 nats per knot on real fits, against ln cos(45) = -0.347. Differencing
+    // logZ across the flag, or across grids of different extent, compares the
+    // normalisers and not the models.
     let log_z = {
         let last = &alpha[k_steps - 1];
         let mut max_a = f64::NEG_INFINITY;
@@ -1246,9 +1471,14 @@ fn run_grid_hmm(
                             let var2_e = 2.0 * sigma_e * sigma_e;
                             let log_norm_const = -(sigma).ln() - (sigma_e).ln();
                             
+                            // Destination is `j` in this pass, not `i`: the
+                            // backward recursion moves from knot k to knot k+1.
+                            // The forward pass applies the area to `i`. Same
+                            // transition matrix, opposite indexing.
                             let log_spatial = log_move_kernel(
                                 lat[i], lon[i], lat[j], lon[j], lat_rad[i], lat_rad[j],
-                                dist, var2, var2_e, aniso) + log_norm_const;
+                                dist, var2, var2_e, aniso) + log_norm_const
+                                + if area_correction { log_cell_area(lat_rad[j]) } else { 0.0 };
                             let log_t = if num_states > 1 { trans_prob[s * num_states + s_next].ln() } else { 0.0 };
                             
                             let val = beta_next + log_t + log_spatial + logpk[k+1][j];
@@ -1408,6 +1638,28 @@ fn mv_edge(km_lon2: f64, km_lat2: f64, lon1: f64, lat1: f64, lon2: f64, lat2: f6
     gc*gc - (km_lon2*dlon*dlon + km_lat2*dlat*dlat)
 }
 
+// Log spherical area element at a knot, differenced between proposal and current.
+//
+// The block sampler's target is written as a density with respect to d(lon) d(lat),
+// but the movement prior exp(-gc^2 / 2 sig2) is a density with respect to the
+// sphere's area element cos(lat) d(lon) d(lat). Without the cos(lat) the target is
+// the grid engine's uncorrected kernel in continuous form: mass accumulates as
+// 1/cos(lat) and tracks lean poleward, worth 0.204 nats between 38 and 50 degrees
+// (the same figure as log_cell_area corrects in run_grid_hmm).
+//
+// It does NOT cancel against the proposal, which is Gaussian in DEGREES and carries
+// no Jacobian of its own, so it has to enter the acceptance ratio once per moved
+// knot. Only the spherical metric owes it: "flat" maps degrees to km through a FIXED
+// reference latitude, an affine map whose constant Jacobian cancels in any ratio.
+//
+// Latitudes are degrees. log_cell_area clamps cos to 1e-6, so a proposal past a pole
+// scores about -13.8 nats and is rejected rather than yielding a NaN -- nothing else
+// in single_site/rb_polish/block_update bounds the continuous latitude state.
+#[inline]
+fn area_delta_deg(lat_prop: f64, lat_cur: f64) -> f64 {
+    log_cell_area(lat_prop.to_radians()) - log_cell_area(lat_cur.to_radians())
+}
+
 // One innovation's contribution to (CRW - Brownian) in the log-prior numerator.
 //
 // The Brownian prior penalises |delta_t|^2; the correlated random walk penalises
@@ -1490,7 +1742,7 @@ struct Ctx<'a> {
     // Response parameters, length 2 (clamped linear) or 4 (logistic); see
     // expected_light(). Carried as a fixed array so Ctx stays Copy-cheap.
     cal: [f64; 4], cal_len: usize,
-    lambda: f64, lam_hi: f64, max_light: f64, prob_slab: f64,
+    mix: LightMix,
     koff: usize,
     aux: &'a [f64],       // this tag's K*ncell aux values (empty if no terms)
     aux_lon0: f64, aux_dlon: f64, aux_ncol: usize,
@@ -1524,15 +1776,18 @@ impl<'a> Ctx<'a> {
         }
         let s = self.obs_start[knot] as usize;
         let n = self.obs_len[knot] as usize;
-        let slab = 1.0 / self.max_light;
+
+        // Kept separate from `ll` so it is visible that the auxiliary term is a
+        // prior on position and carries no temper, while the light does: only
+        // the light has correlated replicates.
+        let mut lit = 0.0;
         for j in s..(s + n) {
             let (sd, cd, ra, gmst) = self.eph[j];
             let z = zenith_from_ephem(sd, cd, ra, gmst, lon, lat);
-            let expc = expected_light(z, &self.cal[..self.cal_len], self.max_light);
-            let spike = spike_density(self.obs_light[j], expc, self.lambda, self.lam_hi, self.max_light);
-            ll += ((1.0 - self.prob_slab)*spike + self.prob_slab*slab).ln();
+            let expc = expected_light(z, &self.cal[..self.cal_len], self.mix.max_light);
+            lit += self.mix.logden(self.obs_light[j], expc);
         }
-        ll
+        ll + lit
     }
 }
 
@@ -1563,6 +1818,7 @@ fn single_site(ctx: &Ctx, xlon: &mut [f64], xlat: &mut [f64], le: &mut [f64], ko
                - mv_edge(ctx.km_lon2, ctx.km_lat2, xlon[t], xlat[t], xlon[t+1], xlat[t+1]);
         }
         corr += -e / (2.0 * sig2);
+        corr += area_delta_deg(py, xlat[t]);
     }
     if ctx.rho.get() != 0.0 {
         let sig2 = ctx.km_lon2 / pm[0];
@@ -1594,6 +1850,7 @@ fn rb_polish(ctx: &Ctx, xlon: &mut [f64], xlat: &mut [f64], le: &mut [f64], koff
                       + mv_edge(ctx.km_lon2, ctx.km_lat2, px, py, xlon[t+1], xlat[t+1])
                       - mv_edge(ctx.km_lon2, ctx.km_lat2, xlon[t], xlat[t], xlon[t+1], xlat[t+1]);
                 corr += -e / (2.0 * sig2);
+                corr += area_delta_deg(py, xlat[t]);
             }
             if ctx.rho.get() != 0.0 {
                 let sig2 = ctx.km_lon2 / pm[0];
@@ -1662,6 +1919,9 @@ fn block_update(ctx: &Ctx, xlon: &mut [f64], xlat: &mut [f64], le: &mut [f64], k
                - mv_edge(ctx.km_lon2, ctx.km_lat2, xlon[m], xlat[m], xlon[m+1], xlat[m+1]);
         }
         corr += -e / (2.0 * sig2);
+        for a in 0..b_len {   // area element, once per moved knot
+            corr += area_delta_deg(prop[2*a + 1], xlat[l + a]);
+        }
     }
     if ctx.rho.get() != 0.0 {
         let sig2 = ctx.km_lon2 / pm[0];
@@ -1738,14 +1998,14 @@ fn run_block_track(
     let k = knot_obs_start.len();
     let bl = block_len as usize;
     let pm = [p_move[0], p_move[1], p_move[2], p_move[3]];
+    reject_table_calibration(&calibration, "run_block_track");
     let eph: Vec<(f64, f64, f64, f64)> = obs_times.iter().map(|&t| solar_ephemeris(t)).collect();
     let ctx = Ctx {
         obs_start: knot_obs_start, obs_len: knot_obs_len, obs_light: &obs_light, eph: &eph,
         cal: cal_array(&calibration), cal_len: calibration.len().min(4),
         // run_block_track is the internal single-track A-B kernel and keeps the
         // historical 2:1 arm ratio; the ratio is exposed on the public engines.
-        lambda: likelihood_params[0], lam_hi: upper_rate(likelihood_params[0], 2.0),
-        max_light: likelihood_params[1], prob_slab: likelihood_params[2],
+        mix: LightMix::new(&likelihood_params, 2.0),
         koff: 0, aux: &[], aux_lon0: 0.0, aux_dlon: 1.0, aux_ncol: 0, aux_lat0: 0.0, aux_dlat: 1.0, aux_nrow: 0,
         spherical: false, km_lon2: 0.0, km_lat2: 0.0, rho: std::cell::Cell::new(0.0),
     };
@@ -1884,6 +2144,11 @@ fn run_block_hier(
     // response model it is (2 = clamped linear, 4 = logistic), so no extra
     // argument is needed and existing length-2*n callers are unaffected.
     let cal_stride = if n > 0 { cal.len() / n } else { 2 };
+    reject_table_calibration(&cal, "run_block_hier");
+    if cal_stride > 4 {
+        panic!("run_block_hier: {} calibration parameters per individual, but it \
+                carries at most four.", cal_stride);
+    }
     // build a Ctx per individual (borrows global obs arrays + per-individual cal/lp/aux)
     let ctxs: Vec<Ctx> = (0..n).map(|i| {
         let ncell = ki[i] * ancol[i] * anrow[i];
@@ -1891,8 +2156,7 @@ fn run_block_hier(
         Ctx {
             obs_start: knot_obs_start, obs_len: knot_obs_len, obs_light: &obs_light, eph: &eph,
             cal: cal_array(&cal[cal_stride*i .. cal_stride*(i+1)]), cal_len: cal_stride,
-            lambda: lp[3*i], lam_hi: upper_rate(lp[3*i], shade_ratio),
-            max_light: lp[3*i+1], prob_slab: lp[3*i+2],
+            mix: LightMix::new(&lp[3*i .. 3*i+3], shade_ratio),
             koff: koff[i], aux: aslice,
             aux_lon0: aux_lon0[i], aux_dlon: aux_dlon[i], aux_ncol: ancol[i],
             aux_lat0: aux_lat0[i], aux_dlat: aux_dlat[i], aux_nrow: anrow[i],

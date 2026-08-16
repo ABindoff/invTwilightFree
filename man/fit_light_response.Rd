@@ -50,7 +50,10 @@ An object of class `tf_light_response`. The fields to pass to an
   fitting a track; the 5th percentile, not the dark level) and `max_light`.
   Those last two, and hence the slope, come from `scale_light` when it is
   supplied. Also returned
-  are `calibration_logistic` (`c(floor, amp, z50, scale)`), `width_deg` (the
+  are `calibration_logistic` (`c(floor, amp, z50, scale)`, for engines given
+  the four-parameter form directly; its `floor` is relative to `baseline`, so
+  the whole vector is on the scale of the baselined light the engine sees, and
+  is not the raw `dark_level`), `width_deg` (the
   90 to 10 per cent zenith span), `saturate_at` and `zero_at`, and `envelope`,
   the binned envelope the fit was made to. `NULL` if the record is too short
   or too dark to support a fit.

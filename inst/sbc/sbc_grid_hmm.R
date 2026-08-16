@@ -20,11 +20,11 @@
 #   * The grid HMM posterior is exact (deterministic forward-backward), so there
 #     are no divergences; ESS = L (iid draws from the discrete posterior).
 #
-# CAVEAT (a real finding to keep in mind): the engine's spike density is not
-# normalised over the clamped light range, and that normaliser is weakly
-# cell-dependent. We generate from the PROPER normalised mixture; a systematic
-# under/over-coverage here may partly reflect that mismatch rather than a forward
-# -backward bug. See sbc_design.md.
+# RESOLVED (was: "the engine's spike density is not normalised over the clamped
+# light range"). It is normalised -- see `spike_normaliser` in src/rust/src/lib.rs,
+# whose form matches `sample_spike()` below exactly, and which was added because
+# this script caught the mu-dependence. Generator and fit agree on the emission,
+# so a failure here is not attributable to the spike support.
 #
 # Requires the package built with the `posterior` field on run_grid_hmm (recent).
 # Run: source this file from inst/sbc/ (it sources ecdf_bands.R alongside it).
@@ -43,9 +43,23 @@ LP        <- c(0.5, 64, 0.05) # fixed c(lambda, max_light, prob_slab)
 DIFFUSION <- 80             # km / sqrt(day), fixed
 STEP_H    <- 24             # daily knots
 CELL      <- 1.0            # grid cell size (deg)
+AREA      <- TRUE           # cell-area weighting; MUST match TwilightFreeGrid's
+                            # default. The fit-kernel generator below reads it, so
+                            # generator and fit cannot drift apart again.
 DEPLOY    <- c(lon = 150, lat = -50)
 T0        <- as.numeric(as.POSIXct("2024-06-15", tz = "UTC"))  # austral winter: lat well identified
 NDAYS     <- 40
+
+# DESIGN CAVEAT, and it matters more than it looks. Forty DAILY knots, both
+# endpoints anchored, at 50 degrees south in strong austral winter light, is a
+# regime where latitude is sharply identified and the movement prior barely moves
+# the posterior. A term can be worth nothing here and a great deal on a 12-hourly
+# track of several hundred knots with a free retrieval endpoint near an equinox.
+# That is not hypothetical: the cell-area term was retired on the strength of a
+# null result from this design and later found to be worth 0.4 to 2.2 degrees of
+# latitude bias on real tracks. Do NOT generalise a negative from this script
+# without re-running it at the knot count, endpoint freedom and season of the
+# application you mean to generalise to.
 EARTH     <- 6371
 
 # knot times exactly as the engine builds them
@@ -95,11 +109,13 @@ draw_truth_sphere <- function() {
 }
 
 # (B) "fit_kernel": draw the next state from the HMM's OWN discrete transition
-# kernel (planar Gaussian over cells, no cos-lat area weighting), so generator
-# and fit share a movement model. Self-consistency SBC: if latitude calibrates
-# here but fails under "sphere", the planar kernel's missing spherical-area term
-# is the cause (fix = cos-lat weighting). If it still fails here, the cause is
-# elsewhere (e.g. the un-normalised spike emission).
+# kernel, so generator and fit share a movement model by construction. It reads
+# AREA, so it follows the engine's cell-area setting rather than assuming one --
+# an earlier version hard-coded "no cos-lat weighting" in a comment and in the
+# code, and silently became a generator/fit MISMATCH the day the engine's default
+# flipped to TRUE. Self-consistency SBC: a failure here is in the implementation
+# (e.g. the un-normalised spike emission), not in the movement model, because
+# there is no movement model to be wrong about.
 draw_truth_fitkernel <- function() {
   dt_days <- diff(KNOTS) / 86400
   idx <- which.min(gcdist_km(DEPLOY["lon"], DEPLOY["lat"], CELLS_LON, CELLS_LAT))
@@ -109,10 +125,30 @@ draw_truth_fitkernel <- function() {
     sig <- DIFFUSION * sqrt(dt_days[k - 1])
     d <- gcdist_km(lon[k - 1], lat[k - 1], CELLS_LON, CELLS_LAT)
     w <- exp(-(d * d) / (2 * sig * sig))               # exactly the engine's kernel
+    if (AREA) w <- w * pmax(cos(CELLS_LAT * pi / 180), 1e-6)   # ...including its measure
     idx <- sample.int(length(w), 1, prob = w)
     lon[k] <- CELLS_LON[idx]; lat[k] <- CELLS_LAT[idx]
   }
-  list(lon = lon, lat = lat, mid_lat = lat[KMID], mid_lon = lon[KMID])
+  # The RANKED truth is jittered within its cell; the CHAIN is not.
+  #
+  # This generator draws cells, so the true position lands exactly on a cell
+  # centre, while fit_and_rank() ranks it against posterior draws jittered by
+  # U(+/- CELL/2). Whenever the posterior concentrates on the truth's own cell the
+  # rank is then DETERMINISTICALLY 0.5, and the rank ECDF acquires a step at 0.5
+  # with a deficit in both tails -- which is exactly the shape this arm has always
+  # produced, and it is a property of the harness, not of the engine. It hits
+  # latitude and not longitude because at -50 deg a 1 deg longitude cell is 71 km
+  # against sigma = 80, so longitude spreads over several cells while latitude
+  # (111 km) can sit inside one. The sphere generator never showed it because
+  # sphere_step() returns a continuous position.
+  #
+  # The model has no sub-cell structure, so the correct target is the position
+  # uniform within its cell. Jitter only the ranked mid-knot: the chain, the
+  # endpoints and the emission stay exactly on cell centres, so the movement model
+  # remains bit-exactly the engine's.
+  list(lon = lon, lat = lat,
+       mid_lat = lat[KMID] + runif(1, -CELL/2, CELL/2),
+       mid_lon = lon[KMID] + runif(1, -CELL/2, CELL/2))
 }
 
 # ---- simulate_data(): light from the proper normalised spike-and-slab -------
@@ -146,7 +182,8 @@ fit_and_rank <- function(data, truth, L) {
     start_lon = truth$lon[1],       start_lat = truth$lat[1],
     end_lon   = truth$lon[k_steps], end_lat   = truth$lat[k_steps],
     calibration = CAL, likelihood_params = LP,
-    step_hours = STEP_H, diffusion = DIFFUSION)
+    step_hours = STEP_H, diffusion = DIFFUSION,
+    area_correction = AREA)
   post <- grid_posterior(fit)
   pk <- post$P[KMID, ]
   if (sum(pk) <= 0) stop("empty posterior at midpoint knot")
@@ -182,22 +219,37 @@ run_sbc <- function(gen, reps = SBC_REPS, L = SBC_L) {
 
 SPECS <- c(rank_mid_lat = "latitude (mid knot)", rank_mid_lon = "longitude (mid knot)")
 
-# Two generators with different roles:
-#   * fit_kernel gen draws from the engine's OWN movement model. This is standard
-#     SBC (data from the fitted model) and is the CALIBRATION CLAIM. It passes,
-#     which validates the implementation (and the spike normalisation that made
-#     it pass).
-#   * sphere gen draws isotropic Brownian motion on the sphere (an alternative,
-#     more "physical" movement with an equatorward drift the planar kernel omits).
-#     It is a model-misspecification ROBUSTNESS PROBE, expected to over-cover
-#     latitude at high |lat| / long tracks. Report as a known limitation; a
-#     spherically-exact transition kernel is future work.
-cat("\n=== robustness probe (isotropic spherical movement) ===\n")
-sbc_sphere <- run_sbc(draw_truth_sphere)
-sbc_ecdf_report(sbc_sphere, SPECS, SBC_L, conf = 0.95,
-                fig = "sbc_sphere.png", tag = "grid HMM | sphere gen")
+# Two generators with different roles. NOTE that AREA = TRUE changes what each
+# arm means, and the previously recorded outcomes were obtained at AREA = FALSE:
+#   * fit_kernel gen draws from the engine's OWN movement model, whatever that
+#     currently is. Standard SBC (data from the fitted model); it isolates the
+#     IMPLEMENTATION, and it cannot detect a mismatch between the model and the
+#     sphere, because the generator inherits the same mismatch. This is precisely
+#     why SBC did not catch the missing cell-area factor for as long as it did.
+#   * sphere gen draws isotropic Brownian motion on the sphere, i.e. the physical
+#     movement. This is the arm that tests CORRESPONDENCE rather than
+#     self-consistency, and it is the one the cell-area factor should help: at
+#     AREA = FALSE it was a misspecification probe expected to miscalibrate
+#     latitude; at AREA = TRUE the fit carries the sphere's measure, so agreement
+#     should IMPROVE. If it now calibrates cleanly, the sphere arm becomes the
+#     substantive claim and fit_kernel becomes the control -- a stronger result
+#     than the old framing, not a repair of it.
+#     (The transition still omits the sphere's tan(lat) drift, which the area
+#     factor does not supply, so residual latitude structure is expected.)
+# Which arms to run: "sphere", "fitkernel", or both. Set SBC_ARMS in the
+# environment to re-run one arm without paying for the other.
+ARMS <- strsplit(Sys.getenv("SBC_ARMS", "sphere,fitkernel"), ",")[[1]]
 
-cat("\n=== self-consistency SBC (fit's own discrete kernel) ===\n")
-sbc_fit <- run_sbc(draw_truth_fitkernel)
-sbc_ecdf_report(sbc_fit, SPECS, SBC_L, conf = 0.95,
-                fig = "sbc_fitkernel.png", tag = "grid HMM | fit-kernel gen")
+if ("sphere" %in% ARMS) {
+  cat("\n=== robustness probe (isotropic spherical movement) ===\n")
+  sbc_sphere <- run_sbc(draw_truth_sphere)
+  sbc_ecdf_report(sbc_sphere, SPECS, SBC_L, conf = 0.95,
+                  fig = "sbc_sphere.png", tag = "grid HMM | sphere gen")
+}
+
+if ("fitkernel" %in% ARMS) {
+  cat("\n=== self-consistency SBC (fit's own discrete kernel) ===\n")
+  sbc_fit <- run_sbc(draw_truth_fitkernel)
+  sbc_ecdf_report(sbc_fit, SPECS, SBC_L, conf = 0.95,
+                  fig = "sbc_fitkernel.png", tag = "grid HMM | fit-kernel gen")
+}

@@ -69,8 +69,14 @@ latitude likelihood is genuinely bimodal ("hemisphere swapping").
 function mapping each date to `"N"`, `"S"`, or `"both"`, it softly downweights
 the wrong hemisphere. The default weighting is strong enough to break an equinox
 tie yet weak enough to be overridden by decisive light data, and a migration
-window can be left unconstrained. `area_prior()` supplies the complementary
-equal-area (cosine-latitude) prior for grid cells.
+window can be left unconstrained.
+
+The complementary equal-area (cosine-latitude) weighting of grid cells is no
+longer a prior you supply. It belongs to the movement kernel, which is a density
+on the sphere evaluated on a grid that is uniform in degrees, and it is applied by
+`TwilightFreeGrid(area_correction = TRUE)` and by
+`TwilightFreeHier(metric = "spherical")`, both defaults. The former `area_prior()`
+term is deprecated; passing it as well applies the factor twice and is an error.
 
 ## Calibration verification
 

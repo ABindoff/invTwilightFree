@@ -66,35 +66,61 @@ hemisphere_prior <- function(hemisphere_by_date, softness = 1e-3, boundary = 0) 
 }
 
 
-#' Spherical area (stationary) prior over grid cells
+#' Spherical area (stationary) prior over grid cells (deprecated)
+#'
+#' Deprecated. Use `TwilightFreeGrid(area_correction = TRUE)`, the default,
+#' instead. This function is retained only so that existing scripts keep running,
+#' and warns on use.
 #'
 #' Returns the log of each cell's relative area, `log(cos(latitude))`, as a
 #' location-prior source: a lon/lat grid has equal angular cells but unequal area
-#' (cells shrink poleward by `cos(lat)`), so this mildly favours equatorward
-#' cells in proportion to the area they represent.
+#' (cells shrink poleward by `cos(lat)`), so this favours equatorward cells in
+#' proportion to the area they represent.
 #'
-#' Scope (important): this is the STATIONARY part of the spherical area measure
-#' only. It does NOT make the grid HMM a fully spherical movement model. Isotropic
-#' Brownian motion on a sphere also carries an equatorward drift in its
-#' transition (a `tan(lat)` term), which a per-cell emission prior cannot
-#' reproduce. SBC showed this term is far too weak to bridge the planar-vs-
-#' spherical movement gap (see notes/topology/sbc_design.md). Treat it as a weak
-#' optional prior, not a calibration fix.
+#' Why it is deprecated: routed through [identity_rule()], this is *mathematically
+#' identical* to the engine's `area_correction`, which applies the same
+#' `log(cos(lat))` to the same destination cell in the initial, forward and
+#' backward passes. Verified bit-for-bit: the two routes return identical
+#' latitudes and identical `log_z`. Two names for one operator invited
+#' double-application, and because `area_correction` now defaults to `TRUE`,
+#' supplying this term as well applies the factor **twice**. Passing both is an
+#' error; see [TwilightFreeGrid()].
 #'
-#' Pair with [identity_rule()]. Longitude is unaffected (the factor is constant
-#' along a parallel).
+#' Correction to earlier documentation: this term was previously described here as
+#' "far too weak to bridge the planar-vs-spherical movement gap", citing an SBC
+#' experiment in `notes/topology/sbc_design.md`. That conclusion does not
+#' generalise. It was measured on a design that makes latitude easy -- 41 daily
+#' knots with **both** endpoints anchored, at 50 degrees south in strong austral
+#' winter light -- where a per-knot log-prior tilt moves the posterior mean very
+#' little. On a 12-hourly track of 273-494 knots with a free retrieval endpoint
+#' and near-equinox segments, the identical term is worth 0.4 to 2.2 degrees of
+#' latitude bias. The effect scales with knot count, endpoint anchoring and how
+#' flat the per-knot likelihood is, so a null result from a sharply identified
+#' design says nothing about a weakly identified one.
+#'
+#' What remains true is the narrower original point: this is the STATIONARY part
+#' of the spherical area measure only. Isotropic Brownian motion on a sphere also
+#' carries an equatorward drift in its transition (a `tan(lat)` term) that no
+#' per-cell prior can reproduce, and supplying the area factor does not by itself
+#' make the SBC rank shape for the spherical generator uniform.
 #'
 #' @return A source closure of class `tf_source`: `function(lon, lat, date)`
-#'   returning `log(cos(lat))` per cell (`date` is ignored).
-#' @seealso [identity_rule()], [TwilightFreeGrid()]
+#'   returning `log(cos(lat))` per cell (`date` is ignored). Carries the attribute
+#'   `tf_area_prior = TRUE` so [TwilightFreeGrid()] can detect the double-count.
+#' @seealso [TwilightFreeGrid()] and its `area_correction` argument.
 #' @examples
-#' area_prior()(lon = c(0, 0), lat = c(-60, -30))   # poleward cell down-weighted
+#' suppressWarnings(area_prior()(lon = c(0, 0), lat = c(-60, -30)))
 #' @export
 area_prior <- function() {
+  warning("`area_prior()` is deprecated: the engine now applies the cell-area ",
+          "factor itself via `TwilightFreeGrid(area_correction = TRUE)` (the ",
+          "default), and the two are the same operator. Passing both applies it ",
+          "twice. Drop the term.", call. = FALSE)
   src <- function(lon, lat, date = NULL) {
     log(pmax(cos(lat * pi / 180), 1e-6))
   }
   class(src) <- c("tf_source", "function")
+  attr(src, "tf_area_prior") <- TRUE
   src
 }
 

@@ -99,9 +99,22 @@ latitude range is clamped to +/- 88 degrees.}
 \item{polish}{Run the red-black single-site polish each sweep (default TRUE;
 needed for unbiased movement-variance estimation).}
 
-\item{metric}{Movement metric: "spherical" (default; great-circle, matches the
-grid engine and is correct for wide-ranging or high-latitude tracks) or "flat"
-(tangent plane at each tag's deployment latitude, slightly faster).}
+\item{metric}{Movement metric: "spherical" (default; great-circle, and correct
+  for wide-ranging or high-latitude tracks) or "flat" (tangent plane at each
+  tag's deployment latitude, slightly faster).
+
+  "spherical" carries the sphere's area element, \code{cos(lat)} per knot, so it
+  matches \code{TwilightFreeGrid(area_correction = TRUE)}. Without it a target
+  written against \code{d(lon) d(lat)} accumulates mass as \code{1/cos(lat)} and
+  leans poleward -- 0.204 nats between 38 and 50 degrees, and 56-101 nats over a
+  275-497 knot track. The factor does not cancel against the proposal, which is
+  Gaussian in degrees.
+
+  "flat" owes no such factor and is not an approximation to "spherical" missing
+  one: it maps degrees to kilometres through a FIXED reference latitude, an
+  affine map whose constant Jacobian cancels in every density ratio. It is a
+  self-consistent planar model, appropriate for narrow-latitude tracks, and it
+  is what \code{run_block_track} always uses.}
 
 \item{movement}{Movement model. \code{"brownian"} (default) treats successive
 steps as independent. \code{"crw"} is a correlated random walk: increments

@@ -28,6 +28,16 @@ model, or `c(floor, amp, z50, scale)` for the logistic model (see details in
 `fit_light_response`). Length selects the model.}
 
 \item{likelihood_params}{c(lambda, max_light, prob_slab) or c(lambda, max_light, alpha, beta)}
+
+\item{shade_ratio}{Ratio of the spike's upper-arm decay rate to its shading
+(lower-arm) rate. Pass **2** to match `TwilightFreeGrid()`'s default; the
+engines' own value if you are reproducing a specific fit. There is no
+cell-count argument -- the number of cells is `length(lon)` -- so a value
+intended as `n_cells` silently lands here instead, and a large `shade_ratio`
+makes observations above the expected curve enormously expensive, which
+biases the profile toward positions that over-predict light (poleward in
+summer). Always profile a matched-response control: it peaks off the truth
+when this is wrong.}
 }
 \value{
 Numeric vector of log-likelihoods, one per grid cell

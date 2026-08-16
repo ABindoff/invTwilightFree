@@ -195,3 +195,53 @@ in the manuscript movement section should be dropped or recast as future work.
 Pilot at `SBC_REPS = 100`; scale to 300-1000 for the reported result. Requires
 the package rebuilt with the `posterior` field (a `devtools::load_all()` /
 reinstall), then `devtools::document()` for the new `grid_posterior()` export.
+
+---
+
+## Correction (2026-08): both arms now PASS; the residual latitude failure was the harness
+
+The decision procedure above was followed to completion and both prescribed fixes
+are in: the spike normaliser, and the `cos(lat)` area weighting of the transition
+and initial prior (`area_correction`, now the default). Result:
+
+| arm | latitude | longitude |
+|---|---|---|
+| sphere generator      | PASS | PASS |
+| fit-kernel generator  | PASS | PASS |
+
+**But the fit-kernel arm did not start passing when the emission was fixed, as
+predicted at step 1 above. It kept failing latitude, and the cause was the
+ranking, not the engine.** That generator draws CELLS, so the true position landed
+exactly on a cell centre, while `fit_and_rank()` ranked it against posterior draws
+jittered by `U(+/- CELL/2)`. Whenever the posterior concentrated on the truth's own
+cell the rank was deterministically 0.5. The signature is a near-vertical step at
+rank 0.5 with a deficit in both tails -- visible in every recorded fit-kernel
+figure, before and after the area correction (depth -0.31 then -0.26). Latitude
+only, because at -50 deg a 1 deg longitude cell is 71 km against sigma = 80 so
+longitude spreads over several cells, while 1 deg of latitude is 111 km and can sit
+inside one. The sphere arm never showed it because `sphere_step()` returns a
+continuous position.
+
+Fix: jitter the RANKED mid-knot within its cell; leave the chain, the endpoints and
+the emission on cell centres so the movement model stays bit-exactly the engine's.
+Latitude went FAIL -> PASS with no engine change.
+
+**Consequence for the write-up:** the "mild latitude miscalibration under the
+self-consistency generator", carried in the manuscript as a known model limitation
+and attributed to the un-normalised spike support, is an artefact of the harness.
+The spike IS normalised (see `spike_normaliser`), and that sentence is stale twice
+over.
+
+### Process note, which is the real lesson here
+
+This file previously recorded that the `cos(lat)` term "had negligible effect" and
+that verdict was copied into user-facing documentation, where it retired the term.
+The measurement was real but the design was 41 DAILY knots with BOTH endpoints
+anchored at -50 deg in strong austral winter light -- a regime where latitude is
+sharply identified and a per-knot log-prior tilt barely moves the posterior. On
+12-hourly tracks of 273-494 knots with a free retrieval end near equinox, the
+identical operator is worth 0.4 to 2.2 degrees of latitude bias.
+
+**Record the design conditions alongside every negative result, and never let a
+null from a sharply identified design retire a term for a weakly identified
+application.** The same caution applies to everything else measured in this file.

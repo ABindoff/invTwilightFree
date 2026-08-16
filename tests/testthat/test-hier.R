@@ -81,3 +81,43 @@ test_that("a hemisphere_prior term shifts the latitude posterior in its directio
   lat_S <- mlat(do.call(TwilightFreeHier, c(common, list(terms = hemi("S")))))
   expect_gt(lat_N, lat_S)     # 'N' prior pulls north of the 'S' prior
 })
+
+test_that("the spherical metric carries the area element and points equatorward", {
+  # The block sampler's target is a density w.r.t. d(lon) d(lat), so it owes the
+  # sphere's cos(lat) area element. Omitting it is the grid engine's uncorrected
+  # kernel in continuous form: mass accumulates as 1/cos(lat) and tracks lean
+  # poleward. The factor does not cancel -- the proposal is Gaussian in degrees.
+  #
+  # No stored pre-fix reference exists, so this uses a contrast that needs none.
+  # Mute the emission (constant light carries no position) and free the retrieval
+  # end, so the movement prior alone sets latitude, then compare metrics:
+  #
+  #   flat       symmetric RW in degrees under a FIXED reference metric. It owes
+  #              no Jacobian (the degrees->km map is affine, so its constant
+  #              Jacobian cancels) and has no latitude direction. The control.
+  #   spherical  the same walk plus the great-circle upgrade and the area element,
+  #              which is the only term here with a latitude DIRECTION.
+  #
+  # So spherical must sit EQUATORWARD of flat, and the sign must FLIP across the
+  # equator. Both hemispheres are run because a same-signed shift at both would be
+  # some generic pull rather than the measure. The sign is the assertion; the
+  # magnitude is not (an uninformative posterior spreads to the mesh edge).
+  skip_on_cran()
+  mk_flat <- function() {
+    tm <- seq(as.POSIXct("2024-03-18", tz = "UTC"), by = "30 min",
+              length.out = 30 * 48)
+    data.frame(time = tm, light = rep(20, length(tm)))
+  }
+  drift <- function(dep_lat, metric) {
+    loc <- data.frame(id = "a", deploy_lon = 150, deploy_lat = dep_lat,
+                      retrieve_lon = NA, retrieve_lat = NA)
+    f <- TwilightFreeHier(data = list(a = mk_flat()), locations = loc,
+                          step_hours = 12, calibration = c(64, 64 / 90),
+                          likelihood_params = c(0.5, 64, 0.05), metric = metric,
+                          surrogate_diffusion = 200, mesh_pad = c(30, 30),
+                          sweeps = 1200L, burn = 400L, thin = 4L, seed = 7L)
+    mean(f$tracks[[1]]$lat) - dep_lat
+  }
+  expect_lt(drift( 45, "spherical"), drift( 45, "flat"))   # north: pulled south
+  expect_gt(drift(-45, "spherical"), drift(-45, "flat"))   # south: pulled north
+})

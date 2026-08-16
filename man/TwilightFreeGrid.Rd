@@ -20,7 +20,10 @@ TwilightFreeGrid(
   likelihood_params = NULL,
   shade_ratio = 2,
   terms = list(),
-  calibrate = FALSE
+  calibrate = FALSE,
+  diffusion_lon = NULL,
+  area_correction = TRUE,
+  lambda_scale = NULL
 )
 }
 \arguments{
@@ -42,13 +45,36 @@ TwilightFreeGrid(
 
 \item{step_hours}{Time step for the HMM knots in hours (default 12.0)}
 
-\item{diffusion}{Movement diffusion in km/sqrt(day)}
+\item{diffusion}{Movement diffusion in km/sqrt(day). With `diffusion_lon`
+supplied this is the north-south scale.}
 
 \item{trans_prob}{Optional transition probability matrix (flattened, row-major) for behavioral states. Defaults to 0.9 diagonal if multiple diffusions are provided.}
 
 \item{calibration}{Calibration parameters c(intercept, slope)}
 
-\item{likelihood_params}{Likelihood parameters c(lambda, max_light, prob_slab)}
+\item{likelihood_params}{Likelihood parameters `c(lambda, max_light,
+  prob_slab)`, or `c(lambda, max_light, alpha, beta)` for a Beta mean on the
+  slab weight, or `c(lambda, max_light, prob_slab, dark_frac,
+  shade_ratio_dark, prob_slab_dark)` to enable the darkness regime: where the
+  expected curve falls below `dark_frac * max_light`, the upper arm takes
+  `shade_ratio_dark` in place of `shade_ratio` and the slab takes
+  `prob_slab_dark` in place of `prob_slab`. That is the Kuo-Mallick indicator
+  for false light, marginalised rather than sampled, and it exists because
+  artificial light and bright moonlight arrive where the model expects
+  darkness and nowhere else. The first three entries mean the same thing in
+  every form.
+
+  A seventh entry tempers the light log-likelihood of each window, multiplying
+  it by that factor. The engine treats observations as conditionally
+  independent given position, and they are not: measured residual
+  autocorrelation runs 0.26 to 0.33 over one to four hours, with a further
+  0.26 at twenty-four hours. A twelve-hour window of twenty-four readings
+  therefore carries far fewer than twenty-four independent pieces of evidence,
+  and the product over windows comes out too sharp. Set it to the reciprocal
+  of the effective sample size per observation; 1 is the independence
+  assumption and the default, and the measured autocorrelation implies about
+  0.3. Only the light is tempered, never the auxiliary terms, which are a
+  prior on position rather than replicated data.}
 
 \item{shade_ratio}{Ratio of the spike's upper-arm decay rate to its shading
 (lower-arm) rate. The default `2` reproduces the historical fixed ratio.
@@ -67,6 +93,48 @@ is calibrated from the known deployment and retrieval fixes (via
 [calibrate_clock_from_endpoints()]) and the observation times are corrected
 before fitting. The fitted clock model is returned as `$clock`. Default
 `FALSE` (no correction).}
+
+\item{diffusion_lon}{Optional east-west diffusion in km/sqrt(day), one value
+  per behavioural state. `NULL` (the default) means isotropic movement and is
+  bit-identical to previous behaviour.
+
+  This is not a claim that animals move anisotropically. The movement prior
+  also absorbs correlated observation error the light likelihood cannot
+  describe, and that error is far larger in latitude than in longitude: on ten
+  elephant seal deployments the prior fraction
+  \eqn{\pi = \sigma^{-2}/(\sigma^{-2} + \tau^{-2})} is 0.87 in latitude and
+  0.30 in longitude under one isotropic scale, so a single value is
+  necessarily too loose on one axis and too tight on the other. That is why
+  latitude intervals under-cover while longitude intervals over-cover, and why
+  no isotropic diffusion calibrates both at once. Inflating process noise to
+  stand in for unmodelled correlated observation error is a standard device;
+  it should be described as one rather than presented as a movement model.}
+
+\item{area_correction}{Weight each grid cell by its area when applying the
+movement kernel. The kernel is a density on the sphere evaluated on a grid
+uniform in degrees, so turning it into a probability per cell needs the
+cos(latitude) Jacobian. Without it every cell counts equally, and because
+high-latitude cells are smaller they receive weight they have not earned:
+on a 100 by 50 degree grid with a 110 km step, incoming mass tracks
+1/cos(latitude) at r = 0.9999 and is 2.32 times larger at 68 N than 22 N,
+worth 0.204 nats per step toward the pole between 38 N and 50 N. `TRUE` is
+correct and is the default; `FALSE` reproduces results from before the
+correction and is there for comparison, not for use.}
+
+\item{lambda_scale}{Optional per-knot multiplier on the shading rate `lambda`,
+  length 1 or one value per knot. `NULL` (default) is a constant rate and is
+  bit-identical to previous versions.
+
+  With a constant `lambda` the model sits at a single point on a bias/coverage
+  trade for the whole track. On 29 elephant-seal deployments, tightening `lambda`
+  fourfold cut mean latitude bias from 1.54 to 0.93 degrees but drove interval
+  coverage from 0.66 to 0.42 and cost 52 km of accuracy. That trade is not uniform
+  in time: near an equinox day length hardly varies with latitude, so a sharper
+  likelihood buys information where the coverage cost is small, whereas near a
+  solstice the day-length signal is abundant and a more forgiving one preserves
+  coverage. The per-knot optimum tracks the absolute solar declination
+  (within-deployment r = -0.31, p = 5e-5, a factor of 3.7 from equinox to
+  solstice). Build a schedule with [declination_lambda_scale()].}
 }
 \description{
 Reconstruct animal tracks using SGAT::essie and continuous likelihood
