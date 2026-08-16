@@ -1588,6 +1588,42 @@ fn run_grid_hmm(
     // Per-knot posterior over cells (marginalised over states), row-major k*n + i.
     // Exposed for uncertainty diagnostics and simulation-based calibration.
     let mut posterior = vec![0.0; k_steps * n];
+    // FORWARD-FILTERED marginal, same layout: alpha alone, without beta.
+    //
+    // Why this is exposed. The smoothed marginal above is two-sided, and a drift in
+    // the transition enters the forward pass going forward in time and the backward
+    // pass going backward in time, so it largely cancels at interior knots. That
+    // makes the smoothed marginal blind to exactly the kind of defect one most wants
+    // to find in a movement prior. The filtered marginal is one-sided and is not
+    // blind to it: under an accumulating drift the filtered bias GROWS with knot
+    // index, while a per-knot tilt leaves it flat. Differencing the two therefore
+    // separates a drift from a tilt, which no diagnostic on the smoothed output can
+    // do. See notes/latitude_bias_investigation.md.
+    let mut filtered = vec![0.0; k_steps * n];
+    for k in 0..k_steps {
+        let mut mx = -1e30;
+        for i in 0..n {
+            for s in 0..num_states {
+                let v = alpha[k][i * num_states + s];
+                if v > mx { mx = v; }
+            }
+        }
+        if mx <= -1e29 { continue; }
+        let mut tot = 0.0;
+        for i in 0..n {
+            for s in 0..num_states {
+                let v = alpha[k][i * num_states + s];
+                if v > -1e29 {
+                    let w = (v - mx).exp();
+                    filtered[k * n + i] += w;
+                    tot += w;
+                }
+            }
+        }
+        if tot > 0.0 {
+            for i in 0..n { filtered[k * n + i] /= tot; }
+        }
+    }
 
     for k in 0..k_steps {
         let mut max_gamma = -1e30;
@@ -1668,6 +1704,7 @@ fn run_grid_hmm(
         prob_state = prob_state_list,
         log_z = log_z,
         posterior = posterior,
+        filtered = filtered,
         n_cells = n as i32
     )
 }

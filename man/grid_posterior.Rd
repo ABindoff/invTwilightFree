@@ -4,10 +4,26 @@
 \alias{grid_posterior}
 \title{Per-knot posterior over grid cells from a TwilightFreeGrid fit}
 \usage{
-grid_posterior(fit)
+grid_posterior(fit, filtered = FALSE)
 }
 \arguments{
 \item{fit}{A `TwilightFreeGrid` object.}
+
+\item{filtered}{Return the forward-FILTERED marginal (the forward pass alone,
+  conditioning only on observations up to and including each knot) instead of
+  the smoothed one. Default `FALSE`.
+
+  This exists because the smoothed marginal is two-sided and is therefore blind
+  to a whole class of defect. A drift in the movement prior enters the forward
+  pass going forward in time and the backward pass going backward in time, so it
+  largely cancels at interior knots and leaves the smoothed output almost
+  unchanged. The filtered marginal is one-sided and does not cancel: under an
+  accumulating drift its bias GROWS with knot index, whereas a per-knot tilt of
+  the marginal leaves that bias flat in `k`. Comparing the two separates a drift
+  from a tilt, which nothing computed from the smoothed output can do.
+
+  Note the two agree at the final knot by construction, where the backward
+  variable is uniform.}
 }
 \value{
 A list with `lon`, `lat` (length-`n` candidate cell coordinates) and

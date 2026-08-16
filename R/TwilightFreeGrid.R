@@ -352,15 +352,33 @@ TwilightFreeGrid <- function(date_time, light, grid,
 #' coverage) and for simulation-based calibration.
 #'
 #' @param fit A `TwilightFreeGrid` object.
+#' @param filtered Return the forward-FILTERED marginal (the forward pass alone,
+#'   conditioning only on observations up to and including each knot) instead of
+#'   the smoothed one. Default `FALSE`.
+#'
+#'   This exists because the smoothed marginal is two-sided and is therefore blind
+#'   to a whole class of defect. A drift in the movement prior enters the forward
+#'   pass going forward in time and the backward pass going backward in time, so it
+#'   largely cancels at interior knots and leaves the smoothed output almost
+#'   unchanged. The filtered marginal is one-sided and does not cancel: under an
+#'   accumulating drift its bias GROWS with knot index, whereas a per-knot tilt of
+#'   the marginal leaves that bias flat in `k`. Comparing the two separates a drift
+#'   from a tilt, which nothing computed from the smoothed output can do.
+#'
+#'   Note the two agree at the final knot by construction, where the backward
+#'   variable is uniform.
 #' @return A list with `lon`, `lat` (length-`n` candidate cell coordinates) and
 #'   `P` (a `K` by `n` matrix; row `k` is the posterior over cells at knot `k`,
 #'   summing to 1 where the knot is identified).
 #' @export
-grid_posterior <- function(fit) {
+grid_posterior <- function(fit, filtered = FALSE) {
   stopifnot(inherits(fit, "TwilightFreeGrid"))
   n <- length(fit$cell_lon)
   K <- length(fit$fit$time)
-  P <- matrix(fit$fit$posterior, nrow = K, ncol = n, byrow = TRUE)
+  src <- if (isTRUE(filtered)) fit$fit$filtered else fit$fit$posterior
+  if (is.null(src))
+    stop("this fit predates the `filtered` output; re-run the fit to use it")
+  P <- matrix(src, nrow = K, ncol = n, byrow = TRUE)
   list(lon = fit$cell_lon, lat = fit$cell_lat, P = P)
 }
 
