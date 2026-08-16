@@ -1138,6 +1138,53 @@ fn log_cell_area(lat_rad: f64) -> f64 {
     lat_rad.cos().max(1e-6).ln()
 }
 
+/// Ito drift correction for using LATITUDE as the state coordinate.
+///
+/// An isotropic kernel on a sphere has no preferred direction, but latitude is a
+/// curved coordinate and its mean is not preserved. For a point at angular
+/// distance `d` and bearing `theta` from `(phi0, lambda0)`,
+///
+///     sin(phi) = sin(phi0) cos(d) + cos(phi0) sin(d) cos(theta)
+///
+/// and averaging over uniform bearing kills the second term, so
+/// `E[sin phi] < sin(phi0)`: the kernel pulls the mean of sin(latitude) toward
+/// zero, i.e. toward the EQUATOR, before any likelihood is involved. To second
+/// order, with `u = phi - phi0`,
+///
+///     u ~= d cos(theta) - (1/2) tan(phi0) d^2 + (1/2) tan(phi0) d^2 cos^2(theta)
+///
+/// and `E[cos^2 theta] = 1/2` returns half the second term, leaving
+///
+///     E[u] ~= -tan(phi0) * sigma^2 / (2 R^2)   radians per step.
+///
+/// That is CORRECT for Brownian motion on a sphere -- spherical BM relaxes to the
+/// uniform distribution, whose `E[sin phi]` is zero -- but it is wrong as an ANIMAL
+/// movement prior, which should not hold that a seal absent data prefers the
+/// equator. Measured on the elephant-seal configuration it is worth about 2 degrees
+/// of latitude over a 480-knot track at `diffusion = 110`, and because it scales as
+/// sigma^2 a looser prior is worse: the fitted bias ran -0.567 deg at D = 110 and
+/// -1.670 at D = 440 on noiseless, correctly-modelled light.
+///
+/// Adding this shift to the SOURCE latitude re-centres the kernel so that latitude
+/// is a martingale under the prior. It belongs in the TRANSITION, not in the
+/// stationary area measure: `log_cell_area` is a different object and correcting
+/// the drift by tampering with it would corrupt the base measure (and, as it
+/// happens, merely flip the sign of the drift rather than remove it).
+///
+/// Verified against the engine's own kernel by direct numerical integration:
+/// correlation 0.99994 with this expression, sigma^2 scaling 16.05 against a
+/// predicted 16, and identical at 1.0 and 0.5 degree cells.
+///
+/// `tan` diverges at the poles, so the shift is capped at a tenth of the kernel's
+/// own angular scale; past that the correction would exceed the step it corrects.
+/// The cap binds only beyond about 86 degrees at the shipped settings.
+#[inline]
+fn ito_lat_shift(lat_rad: f64, sigma: f64, earth_radius: f64) -> f64 {
+    let shift = lat_rad.tan() * sigma * sigma / (2.0 * earth_radius * earth_radius);
+    let cap = 0.1 * sigma / earth_radius;
+    shift.max(-cap).min(cap)
+}
+
 fn log_move_kernel(
     lat_i: f64, lon_i: f64, lat_j: f64, lon_j: f64,
     lat_rad_i: f64, lat_rad_j: f64,
@@ -1174,6 +1221,7 @@ fn run_grid_hmm(
     aux_logl: Vec<f64>,
     area_correction: bool,
     lambda_scale: Vec<f64>,
+    drift_correction: bool,
 ) -> List {
     let n = lon.len();
     let num_states = diffusion.len();
@@ -1349,14 +1397,24 @@ fn run_grid_hmm(
                     let max_cos = lat_rad[i].cos().min(lat_rad[j].cos()).max(0.1);
                     if lon_diff_wrap > threshold_dist / (111.0 * max_cos) { continue; }
 
-                    let a = ((lat_rad[i] - lat_rad[j]) / 2.0).sin().powi(2) +
-                            lat_rad[j].cos() * lat_rad[i].cos() * ((lon_rad[i] - lon_rad[j]) / 2.0).sin().powi(2);
+                    // Ito correction: re-centre the kernel on a SOURCE latitude
+                    // shifted poleward, so the step's mean latitude displacement is
+                    // zero. `j` is the source in the forward recursion.
+                    let src_rad = if drift_correction {
+                        lat_rad[j] + ito_lat_shift(lat_rad[j], sigma, earth_radius)
+                    } else {
+                        lat_rad[j]
+                    };
+                    let src_deg = src_rad.to_degrees();
+
+                    let a = ((lat_rad[i] - src_rad) / 2.0).sin().powi(2) +
+                            src_rad.cos() * lat_rad[i].cos() * ((lon_rad[i] - lon_rad[j]) / 2.0).sin().powi(2);
                     let dist = 2.0 * earth_radius * a.sqrt().asin();
-                    
+
                     if dist > threshold_dist { continue; }
-                    
+
                     let log_spatial = log_move_kernel(
-                        lat[i], lon[i], lat[j], lon[j], lat_rad[i], lat_rad[j],
+                        lat[i], lon[i], src_deg, lon[j], lat_rad[i], src_rad,
                         dist, var2, var2_e, aniso) + log_norm_const;
                     
                     for s_prev in 0..num_states {
@@ -1456,12 +1514,16 @@ fn run_grid_hmm(
                     let max_cos = lat_rad[i].cos().min(lat_rad[j].cos()).max(0.1);
                     if lon_diff_wrap > threshold_dist / (111.0 * max_cos) { continue; }
 
+                    // Unshifted distance, used only as the truncation prefilter. The
+                    // Ito shift is under a kilometre against a 5-sigma threshold of
+                    // hundreds, and the kernel there is ~1e-6, so filtering on the
+                    // raw distance cannot matter.
                     let a = ((lat_rad[j] - lat_rad[i]) / 2.0).sin().powi(2) +
                             lat_rad[i].cos() * lat_rad[j].cos() * ((lon_rad[j] - lon_rad[i]) / 2.0).sin().powi(2);
-                    let dist = 2.0 * earth_radius * a.sqrt().asin();
-                    
-                    if dist > threshold_dist { continue; }
-                    
+                    let dist_raw = 2.0 * earth_radius * a.sqrt().asin();
+
+                    if dist_raw > threshold_dist { continue; }
+
                     for s_next in 0..num_states {
                         let beta_next = beta[k+1][j * num_states + s_next];
                         if beta_next > -1e29 {
@@ -1470,13 +1532,33 @@ fn run_grid_hmm(
                             let sigma_e = if aniso { diffusion_lon[s_next] * dt.sqrt() } else { sigma };
                             let var2_e = 2.0 * sigma_e * sigma_e;
                             let log_norm_const = -(sigma).ln() - (sigma_e).ln();
-                            
+
+                            // Ito correction: `i` is the SOURCE in the backward
+                            // recursion (k -> k+1), so the shift goes on `i`, the
+                            // mirror of the forward pass. The distance has to be
+                            // recomputed inside this loop because the shift depends
+                            // on sigma, which is per state.
+                            let src_rad = if drift_correction {
+                                lat_rad[i] + ito_lat_shift(lat_rad[i], sigma, earth_radius)
+                            } else {
+                                lat_rad[i]
+                            };
+                            let src_deg = src_rad.to_degrees();
+                            let dist = if drift_correction {
+                                let a2 = ((lat_rad[j] - src_rad) / 2.0).sin().powi(2) +
+                                         src_rad.cos() * lat_rad[j].cos() *
+                                         ((lon_rad[j] - lon_rad[i]) / 2.0).sin().powi(2);
+                                2.0 * earth_radius * a2.sqrt().asin()
+                            } else {
+                                dist_raw
+                            };
+
                             // Destination is `j` in this pass, not `i`: the
                             // backward recursion moves from knot k to knot k+1.
                             // The forward pass applies the area to `i`. Same
                             // transition matrix, opposite indexing.
                             let log_spatial = log_move_kernel(
-                                lat[i], lon[i], lat[j], lon[j], lat_rad[i], lat_rad[j],
+                                src_deg, lon[i], lat[j], lon[j], src_rad, lat_rad[j],
                                 dist, var2, var2_e, aniso) + log_norm_const
                                 + if area_correction { log_cell_area(lat_rad[j]) } else { 0.0 };
                             let log_t = if num_states > 1 { trans_prob[s * num_states + s_next].ln() } else { 0.0 };

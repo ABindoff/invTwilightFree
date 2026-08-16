@@ -23,6 +23,7 @@ TwilightFreeGrid(
   calibrate = FALSE,
   diffusion_lon = NULL,
   area_correction = TRUE,
+  drift_correction = FALSE,
   lambda_scale = NULL
 )
 }
@@ -120,6 +121,38 @@ on a 100 by 50 degree grid with a 110 km step, incoming mass tracks
 worth 0.204 nats per step toward the pole between 38 N and 50 N. `TRUE` is
 correct and is the default; `FALSE` reproduces results from before the
 correction and is there for comparison, not for use.}
+
+\item{drift_correction}{Re-centre the movement kernel so that latitude is a
+  martingale under the prior. An isotropic kernel on a sphere has no preferred
+  direction, but latitude is a curved coordinate: averaging
+  `sin(phi) = sin(phi0)cos(d) + cos(phi0)sin(d)cos(theta)` over uniform bearing
+  leaves `E[sin phi] < sin(phi0)`, so the prior pulls toward the equator by
+  `tan(phi) * sigma^2 / (2 R^2)` radians per step before any data are seen. That
+  is correct for Brownian motion on a sphere, which relaxes to the uniform
+  distribution, but wrong for an animal, which does not prefer the equator.
+  The shift is exact: it nulls the measured one-step drift to five decimal
+  places at every latitude and diffusion tested.
+
+  **NEGATIVE RESULT, and the default is therefore `FALSE`.** The correction
+  makes almost no difference to a fitted track. On a 476-knot record at 1
+  degree with noiseless, correctly-modelled light, the posterior mean latitude
+  moved by 0.00009 degrees at `diffusion = 110` and 0.0008 at 440, against
+  biases of -0.586 and -2.025 that it was meant to explain; not one knot's
+  posterior mode changed. `log_z` does move, so the correction is applied --
+  it simply does not reach the posterior.
+
+  The reason is that this is a forward-backward SMOOTHER, not a filter. A drift
+  enters the forward pass going forward in time and the backward pass going
+  backward in time, so it largely cancels in the smoothed marginal at interior
+  knots; correcting both passes consistently cancels in the same way. A drift
+  that cancels cannot have been producing the bias. Kept as a documented,
+  defaulted-off capability so the result is not re-derived, and because it is
+  the correct prior on its own terms.
+
+  Note this is a property of the TRANSITION. It is not the same object as
+  `area_correction`: dropping the area factor flips the sign of the one-step
+  drift rather than removing it, so those two settings bracket zero and neither
+  is drift-free.}
 
 \item{lambda_scale}{Optional per-knot multiplier on the shading rate `lambda`,
   length 1 or one value per knot. `NULL` (default) is a constant rate and is

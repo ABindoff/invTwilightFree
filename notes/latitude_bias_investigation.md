@@ -59,7 +59,13 @@ light.** It is not shading, and it is not response misspecification.
 | grid quantisation | **excluded** | kernel drift identical at cell 1.0 and 0.5 deg to five decimal places |
 | the cell-area correction | **exonerated** | removing it moves estimates NORTH (+0.254 deg, 6/6 tracks) — it does not null the drift, it flips the sign |
 
-## 4. The cause: an isotropic movement prior on a sphere drifts equatorward
+## 4. A real property of the kernel — but NOT the cause. See section 4a.
+
+> **Read section 4a before using anything in this section.** The drift described
+> here is real and exactly characterised, but implementing its exact correction
+> changed the fitted posterior by ~1e-4 degrees. It is not the mechanism behind
+> the bias. The section is kept because the measurement is sound and the reason it
+> fails to propagate is itself the most useful clue we have.
 
 For a point at angular distance `d` and bearing `theta` from `(phi0, lambda0)`:
 
@@ -120,6 +126,50 @@ noted that "isotropic Brownian motion on a sphere also carries an equatorward dr
 in its transition (a `tan(lat)` term)", but judged it "far too weak" on SBC
 evidence. That judgement was wrong, and for an instructive reason — see below.
 
+## 4a. NEGATIVE RESULT: correcting the drift changes nothing
+
+The Ito correction of section 6 was implemented (`drift_correction`, lib.rs
+`ito_lat_shift`) and tested. **It is exact and it does not work.**
+
+- **Exact**: the shift nulls the measured one-step drift to five decimal places
+  at every latitude and diffusion tested (-0.00298 -> -0.00000 at 35 N, D = 110).
+- **Live**: `log_z` moves (-53051.892 -> -53051.923 at D = 110), so it is applied.
+- **Inert on the posterior**: on a 476-knot record at 1 degree with noiseless,
+  correctly-modelled light, the posterior MEAN latitude moved by **0.00009 deg** at
+  D = 110 and **0.0008 deg** at D = 440 — three to four orders of magnitude below
+  the -0.586 and -2.025 it was meant to explain. **Not one of 476 posterior modes
+  changed.**
+
+### Why, and why this is the useful part
+
+**This is a forward-backward SMOOTHER, not a filter.** A drift enters the forward
+pass going forward in time and the backward pass going backward in time, so at
+interior knots it largely cancels in the smoothed marginal. Correcting both passes
+consistently cancels in exactly the same way. **A drift that cancels cannot have
+been producing the bias in the first place.**
+
+So the mechanism does not act through the transition as a drift. It must act on
+the **smoothed marginal** — which is where the one term with a measured fit-level
+effect also lives: the area factor multiplies each knot's marginal directly
+(`log_cell_area(lat_i)` added to `alpha[k][i]`, once per knot, outside the sum over
+sources), rather than entering as a drift that two-sided smoothing can cancel.
+
+### The scaling agreement was a coincidence
+
+The sigma^2 story looked strong because the D = 440 arm was ~3x worse and the
+per-step drift scales as sigma^2 (16.05 measured against 16 predicted). But the
+real mechanism also widens with the kernel, so that observation is consistent with
+both stories and **discriminates neither**. The kernel diagnostic measured a
+genuine property of the kernel; it was over-read as the property that reaches the
+posterior.
+
+### Disposition
+
+`drift_correction` is kept and **defaults to FALSE** — bit-identical to every
+number in this campaign when off, documented so the result is not re-derived, and
+defensible on its own terms as the correct prior. Same disposition as
+`diffusion_lon`; contrast `overcount`, which was reverted.
+
 ## 5. Why SBC did not catch it
 
 SBC simulates from the model's own prior and likelihood, so it verifies
@@ -132,34 +182,48 @@ Real-data interval coverage against independent truth is the complement, and the
 two disagree. **Report both.** This is a substantive methodological point for the
 Discussion, not a caveat.
 
-## 6. Next step
+## 6. Next step (revised after the negative result)
 
-Implement an **Ito correction**: add `+tan(phi) * sigma^2 / (2 R^2)` to the
-movement kernel so that latitude is a martingale under the prior. This removes the
-coordinate drift without touching the emission, the area measure, or the movement
-scale.
+The Ito correction was the previous next step. It was implemented, tested, and
+falsified by its own prediction — see section 4a. **Do not retry it.**
 
-The falsifiable prediction, testable with the existing harness unchanged:
+What section 4a establishes is where to look instead: the mechanism survives
+two-sided smoothing, so it is **not** a drift in the transition. It acts on the
+smoothed marginal. Two candidates, in order:
 
-1. the null gate's -0.567 deg (area ON, D=110) should fall toward zero;
-2. **more diagnostically**, the D=440 arm should stop being ~3x worse than D=110,
-   because the σ²-scaled drift is what makes a looser prior worse.
+1. **The area factor as a per-knot marginal TILT, not a drift.**
+   `log_cell_area(lat_i)` is added to `alpha[k][i]` once per knot, outside the sum
+   over source cells, so it multiplies each knot's marginal by `cos(lat)` directly
+   — and unlike a drift, a tilt does not cancel between the forward and backward
+   passes. This is the only term with a *measured* fit-level effect (+0.254 deg,
+   6/6 tracks, p = 0.031), so it is the one to characterise properly.
+   A first-order estimate (`-sigma_post^2 * tan(lat)`, about 0.02 deg at
+   `sigma_post = 1.1 deg`) is an order of magnitude too small to explain +0.254,
+   so the accounting is not yet right and that gap is the thing to chase. Measure
+   it directly on the smoothed marginal rather than deriving it.
 
-If (1) improves but (2) does not, the correction is being absorbed rather than
-fixing the mechanism.
+2. **How the tilt at OTHER knots reaches knot k through the chain.** The
+   single-knot estimate above treats each knot in isolation; the smoother couples
+   them, and the coupling strengthens as the movement prior widens — which would
+   also produce the observed growth with `diffusion` without any drift.
 
-### Scope caution
+### Method note, learned the hard way
 
-`log_cell_area()` is shared. It is used by `run_grid_hmm` (initial, forward and
-backward passes) and the block/hierarchical sampler's `emit` path
-(`log_area_element` around lib.rs:1641). A drift correction belongs in the
-TRANSITION, not in the stationary area measure, so the change must be scoped to the
-movement kernel deliberately rather than applied by editing `log_cell_area`.
+Both remaining candidates are statements about the **smoothed marginal**, so test
+them there. The failure in section 4a came from measuring a property of the
+one-step kernel in isolation and assuming it propagated. Any future mechanism
+should be demonstrated to survive forward-backward smoothing *before* a correction
+is designed for it.
 
-A one-line empirical shadow of the correction — `log_cell_area` returning
-`0.5 * ln(cos lat)`, i.e. halfway between the two bracketing settings — would also
-null the drift, but it is a coincidence of the algebra rather than a defensible
-model, and it would corrupt the stationary measure. Do not ship it.
+### Scope caution (still applies)
+
+`log_cell_area()` is shared between `run_grid_hmm` (initial, forward and backward
+passes) and the block/hierarchical sampler's `emit` path (`log_area_element`,
+around lib.rs:1641). Anything done to it hits both engines.
+
+Do not "fix" the tilt by weakening `log_cell_area` to `0.5 * ln(cos lat)`: it would
+null the one-step drift, but that drift is not the problem, and it would corrupt
+the stationary measure to chase a number.
 
 ## 7. What remains unexplained
 
