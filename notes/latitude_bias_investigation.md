@@ -61,11 +61,13 @@ light.** It is not shading, and it is not response misspecification.
 
 ## 4. A real property of the kernel — but NOT the cause. See section 4a.
 
-> **Read section 4a before using anything in this section.** The drift described
-> here is real and exactly characterised, but implementing its exact correction
-> changed the fitted posterior by ~1e-4 degrees. It is not the mechanism behind
-> the bias. The section is kept because the measurement is sound and the reason it
-> fails to propagate is itself the most useful clue we have.
+> **Read sections 4a and 4b before using anything in this section.** The drift
+> described here is real and exactly characterised, but implementing its exact
+> correction changed the fitted posterior by ~1e-4 degrees. It is not the mechanism
+> behind the bias. Section 4b identifies what is: two per-observation terms in the
+> EMISSION. Section 4b also corrects two claims made elsewhere in this note --
+> the "monotone in declination" result (an artefact of taking absolute values) and
+> the magnitude bookkeeping.
 
 For a point at angular distance `d` and bearing `theta` from `(phi0, lambda0)`:
 
@@ -170,6 +172,110 @@ number in this campaign when off, documented so the result is not re-derived, an
 defensible on its own terms as the correct prior. Same disposition as
 `diffusion_lon`; contrast `overcount`, which was reverted.
 
+## 4b. CORRECTION (2026-08-17): the bias is not monotone in declination, and the
+## mechanism is in the EMISSION
+
+Two things asserted earlier in this note are wrong. Both were found by independent
+review and then verified directly against `equinox_tilt.csv`.
+
+### The "monotone in |declination|" result was an artefact of the absolute value
+
+Keyed on SIGNED declination, the bias CHANGES SIGN:
+
+| signed declination | mean bias | posterior sd |
+|---|---|---|
+| -22.3 (NH winter solstice) | -0.902 | 1.00 |
+| -12.4 | -1.598 | 1.36 |
+| **-7.4** | **-2.156** | 1.65 |
+| 0.0 (equinox) | -1.672 | 1.68 |
+| +7.5 | -0.311 | 1.26 |
+| +12.5 | -0.027 | 1.04 |
+| **+22.3 (NH summer solstice)** | **+0.101 POLEWARD** | 0.83 |
+
+At the same |declination|, winter and summer are -2.156 and -0.311; averaging them
+manufactured the monotone curve reported earlier. Signed declination fits better
+than absolute (R2 0.338 vs 0.268). **The equinox is not the worst case** -- that is
+declination -5 to -10.
+
+So the correct description is a tilt pointing toward the **LONGER-DAY side**:
+equatorward in northern winter, poleward in northern summer, its effect scaled by
+posterior width. Not "the light goes blind at the equinox so a constant equatorward
+force wins".
+
+### The magnitude puzzle was my arithmetic
+
+The note previously made much of the fitted slope being 48.9 where "1.0 would be
+exact". That calibration is wrong. A PERSISTENT per-knot tilt is amplified by the
+smoother's correlation length: bias = c * sum_j Cov(phi_k, phi_j), not c * sigma^2.
+Even the pure area tilt would regress with slope ~5-10, never 1.0. The required
+per-knot tilt is about **0.1 nats/deg**, not the 0.5-0.9 claimed.
+
+### The mechanism: two per-observation terms in the emission
+
+Measured per-knot tilt at truth on noiseless light (record 2021033/90):
+
+| variant | tilt (nats/deg) |
+|---|---|
+| full engine emission | -0.116 |
+| spike normaliser frozen | -0.063 |
+| symmetric arms (`shade_ratio = 1`) | -0.071 |
+| **both removed** | **-0.004** |
+| pure geometric mismatch | -0.005 |
+
+By zenith band: day -0.092, twilight -0.019, night -0.004 -- it is made in DAYLIGHT,
+on the shoulder of the response, not at twilight.
+
+1. **Spike-normaliser gradient** (`spike_normaliser`, lib.rs:65). `Z(mu)` shrinks as
+   `mu` approaches the clamp at `max_light`, so cells predicting brighter daytime
+   light get a data-independent bonus. Added once PER OBSERVATION.
+2. **Arm asymmetry** (`spike_density`, lib.rs:238, `lam_hi = 2*lam_lo`). On noiseless
+   data each daytime-shoulder observation charges poleward candidates (which predict
+   dimmer than observed) at `2*lambda` and equatorward candidates at `lambda`.
+
+Sufficiency: a 1-D latitude-only forward-backward chain on these exact emission
+profiles reproduces the 2-D fit with knot-error correlation **0.974**, and removing
+both components plus the area term takes the chain bias from -0.818 to **-0.045**.
+
+### The `perfect` arm is NOT a clean null
+
+Noiseless light sits at the spike's MODE, but `E[score] = 0` holds only for
+model-correct data, and the spike's mean is not its mode. The perfect arm therefore
+measures the score of one off-model dataset rather than isolating the estimator.
+**The honest estimator number is the NOISY arm, -0.455**, where `E[score] = 0` kills
+the arm-asymmetry term to first order. Section 2's -0.643 should be read with that
+caveat.
+
+### CONFIRMED by three pre-registered predictions (2026-08-17)
+
+Predictions written down before running, chosen because the leading alternatives
+predict different outcomes. Posterior-mean latitude bias:
+
+| record | baseline | `shade_ratio = 1` | `lam_mult = 2` | SH mirror |
+|---|---|---|---|---|
+| 2021033/90 | -1.017 | **-1.291** | **-0.556** | **+0.375** |
+| 2023032/0 | -0.692 | **-0.960** | **-0.356** | **+0.733** |
+| *predicted* | | *-1.2, WORSE* | *-0.4, better* | *+0.6, SIGN FLIP* |
+
+All three correct in direction on both records, and close in magnitude.
+
+- The **mirror** is the decisive one. Light regenerated from the same response at
+  `(-lat, lon)` on the same dates flips the sign of the bias, because the bias is
+  EQUATORWARD and equatorward in the southern hemisphere means increasing latitude.
+  No apparatus artefact -- grid indexing, interpolation, binning, truth handling --
+  predicts a hemisphere flip.
+- **`shade_ratio = 1` is the discriminating one.** Symmetrising the arms makes the
+  bias WORSE, which this mechanism requires and a "the asymmetry is the culprit"
+  reading forbids. Posterior sd behaves as required throughout (1.181 -> 1.365
+  symmetrised, -> 0.890 at doubled lambda): since bias ~ tilt * sum_j Cov, a wider
+  posterior amplifies the residual normaliser tilt even as the arm term is removed.
+
+### Corroboration already on disk
+
+The `shade_ratio` sweep of 2026-08-06, recorded at the time as a negative result,
+is out-of-sample confirmation: ratio 1.00 -> bias -1.88, 2.00 -> -0.88, 4.00 ->
++1.10. Monotone, and *reducing* the ratio to 1 made it WORSE -- which is what this
+mechanism predicts and what a "symmetrise the arms" reading does not.
+
 ## 5. Why SBC did not catch it
 
 SBC simulates from the model's own prior and likelihood, so it verifies
@@ -182,7 +288,34 @@ Real-data interval coverage against independent truth is the complement, and the
 two disagree. **Report both.** This is a substantive methodological point for the
 Discussion, not a caveat.
 
-## 6. Next step (revised after the negative result)
+## 6a. Next step, now that the mechanism is confirmed (2026-08-17)
+
+**The normaliser cannot simply be removed.** It is what makes the spike a proper
+density over `[0, max_light]`, and its absence is exactly what SBC caught before
+(see `notes/topology/sbc_design.md`). So this is not a bug fix. The options are:
+
+1. **Change the emission family** so its normaliser does not depend on the expected
+   value. Anything whose `Z` is constant in `mu` carries no tilt. This is the
+   principled route and it is a MODELLING decision with consequences for the
+   manuscript's likelihood section.
+2. **Remove the clamp interaction.** The tilt is largest where `mu` approaches
+   `max_light` (lib.rs:221) -- it is made in DAYLIGHT (-0.092 nats/deg) not twilight
+   (-0.019). A response that does not saturate, or a support that does not truncate
+   at `max_light`, would reduce it without changing the family.
+3. **Accept and report it.** A correctly-normalised asymmetric emission carries a
+   latitude tilt; that is a property of the likelihood, not an error in it. Then the
+   honest statement is the size of the resulting bias and its seasonal sign.
+
+Do NOT tune `shade_ratio` to cancel it: symmetrising makes it worse (above), and
+the ratio-4 setting that zeroes bias on real data does so by trading one tilt
+against another, not by removing either.
+
+**An implication worth pursuing separately.** The tilt is made in DAYLIGHT, on the
+shoulder of the response. Much of this campaign -- the `lambda` tuning, the
+darkness-regime work -- assumed the action is at twilight because that is where
+latitude INFORMATION lives. The information is at twilight; the bias is not.
+
+## 6. Superseded next step (kept for the record)
 
 The Ito correction was the previous next step. It was implemented, tested, and
 falsified by its own prediction — see section 4a. **Do not retry it.**
