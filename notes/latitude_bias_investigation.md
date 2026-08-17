@@ -9,6 +9,83 @@ from the numbers quoted below.
 
 ---
 
+## 0. CURRENT STATE (2026-08-17, evening) — read this first
+
+This note grew by accretion and contains retractions. Everything below is superseded
+by this section where they conflict.
+
+### The engine is sound on correctly-specified data
+
+The decisive control is the battery's **noisy** arm: clear-sky light plus a draw from
+the engine's OWN spike-and-slab mixture (KS-verified against `LightMix`), so the
+emission is correct by construction, while the TRACK is a real Argos track rather
+than a draw from the movement prior — the situation on real data.
+
+| | honest synthetic | real data |
+|---|---|---|
+| latitude bias | **-0.51 deg** (6/6 negative, p = 0.031, one track gives half) | -1.54 deg |
+| median error | 189 km | ~244 km |
+| latitude coverage | **0.996** | **0.64** |
+
+**The coverage failure does not reproduce at all** when the emission is right. So
+roughly a degree of the real-data bias, and essentially all of the coverage problem,
+is the emission not matching REAL light — not the inference, geometry, or prior.
+
+### What was tested and does NOT help
+
+Censoring the emission, the Ito drift correction, tightening or splitting the
+movement prior per axis, changing the point-estimate readout, unclamping the
+expected curve. All measured; all neutral or worse. Two were falsified only after
+being implemented. **Do not re-run these.**
+
+### The gauge is real, and your endpoints already suppress it
+
+Fisher analysis of the emission (553 one-day windows): condition number **3.8e4**,
+and latitude is essentially THE soft direction (weight 0.881 in the softest
+eigenvector, 0.005 in the stiffest), trading against the threshold `z50` at 1.4-4.4
+deg of latitude per degree, with the exchange rate **changing sign across the year**.
+That explains why axis-aligned hyperparameter sweeps returned null or produced
+compensating shifts: they were moves along a level set.
+
+But the fitted sensitivity is only **0.07 deg/deg**, ~20x smaller, because both
+endpoints are pinned to truth. The pinned deployment and recovery positions are
+already acting as closure constraints and suppressing the gauge mode.
+
+### THE DELIVERABLE: identify the calibration by pooled evidence, not at the haul-out
+
+Gauge inflation (cost in latitude of not knowing the calibration) falls from **1.81**
+on a 5-day window to **1.08** over a full 240-day deployment, and **1.01** pooling six
+tags, with `se(z50)` shrinking as 1/sqrt(N) to 0.045 deg. The seasonal contrast over
+a full deployment identifies the calibration.
+
+`fit_light_response()` estimates `z50` on a **15-day haul-out window** — under 1 deg
+of declination span, where inflation is 1.7 — and freezes it for a deployment
+spanning 47 deg. The identifying information is in the data and is discarded.
+
+**Validated fix, no engine change required.** Profile `log_z` (already returned) over
+`z50`, summed across tags, and take the maximiser:
+
+| dz50 | -2.0 | -1.0 | -0.5 | **0.0** | +0.5 | +1.0 | +2.0 |
+|---|---|---|---|---|---|---|---|
+| rel log_z | -48.0 | -13.7 | -4.3 | **0.0** | -0.9 | -7.1 | -35.5 |
+| median km | 480 | 314 | 245 | **189** | 194 | 210 | 350 |
+
+Pooled maximiser lands **exactly on the truth (+0.00)** while per-tag maximisers
+scatter with sd 1.03 and one tag (2023037) runs to the boundary and identifies
+nothing alone. Accuracy is optimised at the same point.
+
+**Calibration error costs ACCURACY, not bias**: ~125 km per degree of `z50`, but only
+0.07 deg of latitude. Given the recorded 5.6 deg spread in haul-out `z50` estimates
+across tags, this is a large accuracy cost currently being paid silently.
+
+### What remains unexplained
+
+About 1 deg of real-data latitude bias and the whole of the coverage failure, both
+localised to emission fidelity against real light. The battery cannot investigate
+this: it generates from the model. Next step is characterising the real residual
+distribution (observed light minus fitted expectation at Argos-known positions)
+against the spike-and-slab the model assumes.
+
 ## 1. The problem
 
 Fitted against Argos truth on 29 double-tagged northern elephant seal
