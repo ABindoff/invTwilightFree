@@ -1,7 +1,8 @@
 # The residual latitude bias: what it is, what it is not, and what to do next
 
 Status as of 2026-08-18. Branch `fix/light-response-autodetect`.
-**Read sections 0, 0a and 0b first, in that order** — 0a and 0b correct section 0.
+**Read sections 0, 0a, 0b and 0c first, in that order.** 0a and 0b correct section 0;
+0c is the closest this dataset comes to an answer.
 
 This note exists so that the manuscript can be edited from a written record rather
 than from recollection. Everything here is reproducible from scripts in
@@ -179,6 +180,84 @@ This also resolves the "80x too small" dismissal recorded earlier. The tilt shif
 `-sigma^2 tan(lat)`, and the right sigma is the **per-knot LIKELIHOOD** width (6-9
 deg, in the Fisher output), not the smoothed posterior width (1.1 deg). That gives
 ~0.85-1 deg, and the arithmetic closes.
+
+## 0c. THE ANSWER, as far as this dataset can give one (2026-08-18)
+
+**Real twilight light along these tracks is not a pure function of solar zenith.**
+Relative to a fitted zenith-only response it gets systematically dimmer as the animal
+moves north, at the surface, independent of diving:
+
+    within-tag slope = -0.0707 zenith-equivalent degrees per degree of latitude
+                       (se 0.0032, t = -21.9), depth_min <= 10 m
+
+("Zenith-equivalent" = residual divided by the fitted response slope, so +1 means the
+light is one degree of zenith brighter than the model expects.)
+
+### The control that makes this a finding and not an artefact
+
+The identical analysis on the synthetic battery — light GENERATED from a pure zenith
+function, so it has no atmosphere, no cloud and no latitude dependence whatsoever:
+
+| light | latitude slope |
+|---|---|
+| synthetic, noiseless | **+0.0009** (se 0.0013, t 0.7) |
+| synthetic, model-correct noise | **+0.0010** (se 0.0094, t 0.1) |
+| **real, gated at 10 m** | **-0.0707** (se 0.0032, t -21.9) |
+
+Zero in synthetic, 22 sigma in real. Response fitting, the tangent, the clamping and
+the zenith-equivalent conversion create NO slope on light that has none.
+
+### It is not depth. Eliminated three ways
+
+| gate | kept | slope |
+|---|---|---|
+| none | 100% | -0.0850 |
+| 10 m | 96% | -0.0707 |
+| 5 m | 75% | -0.0746 |
+| 2.5 m | 58% | -0.0711 |
+| **1 m** | **37%** | **-0.0816** |
+
+Keeping only observations where the animal came within ONE METRE of the surface
+leaves the slope as large as ungated. Depth inside the gate does not vary
+monotonically with latitude (1.45 / 3.06 / 3.08 / 1.82 m), and controlling for it
+linearly removes 11%.
+
+### It is the right size to be the whole bias
+
+-0.0707 over a typical 15 degree excursion is -1.06 zenith-equivalent degrees; at the
+measured Fisher exchange rate of 1.4-4.4 deg latitude per degree of z50 that is
+**-1.49 to -4.67 degrees**, bracketing the observed **-1.54**.
+
+### What it is NOT: Rayleigh scattering in air
+
+Rayleigh acts through AIR MASS, a function of zenith alone — the optical path at a
+given z is identical at 37 N and 52 N — so an empirically fitted response absorbs it
+entirely. The same argument disposes of twilight scattering geometry in its simple
+form: shadow height above the observer depends on how far the sun is below the
+horizon, not on where the observer stands. Consistent with the earlier measurement
+that the curve at fixed zenith is stable across seasons to 1-2%.
+
+### What it might be, and why this dataset cannot say
+
+Cloud climatology (the North Pacific storm track puts more cloud north), sea state,
+water clarity, or solar-path geometry (the terminator's orientation at fixed z does
+differ with latitude). **Not separable here.** One colony and one phenology means the
+animals go north IN SUMMER, so latitude and solar geometry are collinear at
+r = -0.665: single-predictor R2 is 0.1417 (latitude) against 0.1395 (dz/dt), the joint
+model reaches only 0.1442, and the latitude-by-dz/dt cross-tabulation is non-monotone
+in both directions. Separating them needs a second colony at a different latitude, or
+tags whose excursion and season decouple.
+
+### What this means for the manuscript
+
+This is a **characterised, quantified limitation with a clean control**, not an
+unexplained residual bias. The honest statement is that archival light on a
+wide-ranging animal is not a pure function of solar zenith over a 15-degree
+excursion; the departure is measurable at -0.07 zenith-equivalent degrees per degree
+of latitude; and it accounts for the observed latitude bias in full. It generalises
+to every light-geolocation study of a wide-ranging animal, which is the audience.
+
+Reproduced end to end by `analysis/diagnostics/diag_latitude_drift.R`.
 
 ## 1. The problem
 
