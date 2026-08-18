@@ -1,6 +1,7 @@
 # The residual latitude bias: what it is, what it is not, and what to do next
 
-Status as of 2026-08-16. Branch `fix/light-response-autodetect`.
+Status as of 2026-08-18. Branch `fix/light-response-autodetect`.
+**Read sections 0, 0a and 0b first, in that order** — 0a and 0b correct section 0.
 
 This note exists so that the manuscript can be edited from a written record rather
 than from recollection. Everything here is reproducible from scripts in
@@ -85,6 +86,99 @@ localised to emission fidelity against real light. The battery cannot investigat
 this: it generates from the model. Next step is characterising the real residual
 distribution (observed light minus fitted expectation at Argos-known positions)
 against the spike-and-slab the model assumes.
+
+## 0a. THE PROBLEM SPLITS IN TWO (2026-08-18) — depth explains the seasonality, not the bias
+
+Independent review (two Fable agents) plus verification found that `depth_min` — the
+shallowest depth in each 30-minute decimation window, present in the cached panel and
+never regressed against the emission residual at observation level — is a large,
+structured term in the emission.
+
+**Verified independently.** In the graded zenith band (82-100 deg, where the tangent
+is not clamped; it IS clamped for 94% of the record):
+
+| depth_min | share | median residual | slab-scale fraction |
+|---|---|---|---|
+| <2.5 m | 58.1% | +0.028 | 0.002 |
+| 2.5-10 m | 37.7% | +0.022 | 0.000 |
+| 10-25 m | 0.3% | **-0.103** | 0.017 |
+| 25-100 m | 1.0% | **-0.246** | 0.333 |
+| >100 m | 2.9% | **-0.492** | 0.884 |
+
+It is a GATE, not a gradient — flat to 10 m, then a cliff. **95.1% of slab-scale
+events (residual < -0.3 of max_light) occur below 10 m.** Depth explains **51.3% of
+within-tag residual variance**. And 41.9% of graded windows never come shallower than
+2.5 m, so the 30-minute MAXIMUM is not recovering surface light.
+
+**That refutes the recorded "depth attenuation: dead" verdict**, whose stated reason
+was that 96% of windows reach within 10 m of the surface. Reaching 10 m is not
+reaching the surface, and the gate sits exactly at 10 m. The two earlier depth tests
+also had specific defects: `diag_depth_bias.R` aggregated to MONTH level, destroying
+a 30-minute signal; `fit_depth_corrected.R` inverted Beer-Lambert in LINEAR units on
+a LOG-scale sensor.
+
+### What gating at 10 m does, and does not do
+
+**DOES remove the seasonal drift and the slab** (`diag_depth_gate.R`):
+
+| | ungated | gated |
+|---|---|---|
+| NH winter | -0.373 | +0.633 |
+| equinox | +0.053 | +0.594 |
+| NH summer | +0.537 | +0.557 |
+| **seasonal swing** | **0.910** | **0.076** |
+
+A 92% collapse, in zenith-equivalent degrees. Twilight-band tail mass falls from
+0.030/0.026/0.009 to 0.001/0.000/0.000.
+
+**DOES NOT remove the latitude drift.** Pre-registered requirement was to at least
+halve it; the within-tag slope goes -0.0850 -> -0.0707 zenith-equivalent deg per deg
+of latitude, a **17% reduction. PREDICTION FAILED.**
+
+### So the problem is two problems
+
+1. **Seasonal emission drift = diving behaviour.** Removable with the tag's own depth
+   channel. Explains the slab entirely.
+2. **Latitude drift = still unexplained**, and it is the one that maps onto the bias:
+   -0.085 zenith-equivalent deg per deg latitude, times the measured exchange rate of
+   1.4-4.4, gives **-0.12 to -0.37 deg of latitude bias per degree of northward
+   excursion**. Over a 15 deg excursion that is -1.8 to -5.6 deg at the northern
+   extreme — the right order, and structured as the bias is.
+
+### Immediately actionable
+
+**`prob_slab` should be near zero on depth-gated light**, not 0.10. Measured tail
+after gating is 0.000-0.001: a ~100x overstatement of contamination, and unlike
+`lambda` it is not compensating for anything.
+
+### The open question, sharpened
+
+**What makes twilight light drift dimmer, relative to a zenith-only model, as the
+animal moves north — after depth is controlled for?**
+
+## 0b. A correction to section 0's framing
+
+Section 0 concluded "the coverage failure does not reproduce on the honest synthetic,
+so the gap is emission fidelity to real light". That is sound for COVERAGE and was
+wrongly extended to BIAS. Adversarial review showed the bias is substantially
+accounted for by the cos(latitude) area tilt acting on a WIDE PER-KNOT LIKELIHOOD,
+with magnitude scaling as prior force / effective latitude precision — the honest
+synthetic does not escape it, it simply has ~3.3x more precision.
+
+- Battery's own per-tag law `bias = 0.03 - 0.147 * var(err_lat)`, extrapolated to the
+  real error variance, predicts **-1.37 deg** against an observed **-1.54**.
+- Real data, area OFF vs ON: bias -0.166 -> -1.543, i.e. the correction moves bias
+  **south by 1.38 deg on 28/29 tags**, and the per-tag shift scales with posterior
+  latitude variance (r = -0.65, p = 1.3e-4).
+
+**So the elimination row "the area correction is not a bias source" is WRONG.** Both
+are true: the uncorrected kernel drifts poleward AND the corrected one carries an
+equatorward tilt. Keeping the correction is still right; calling it inert was not.
+
+This also resolves the "80x too small" dismissal recorded earlier. The tilt shift is
+`-sigma^2 tan(lat)`, and the right sigma is the **per-knot LIKELIHOOD** width (6-9
+deg, in the Fisher output), not the smoothed posterior width (1.1 deg). That gives
+~0.85-1 deg, and the arithmetic closes.
 
 ## 1. The problem
 
