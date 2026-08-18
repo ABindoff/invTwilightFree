@@ -120,3 +120,48 @@ Scripts written before 2026-08-10 are documented in `LOG_calibration_window.md` 
 `SESSION_STATE.md`; several were superseded by later work and a few were harness
 failures kept because the failure was instructive. Where this README and an older
 document disagree, this README and `notes/latitude_bias_investigation.md` §0 win.
+
+## Response family: settled (2026-08-18)
+
+`fit_family_control.R` -- pipeline recipe verbatim, three response arms, real light,
+6 tags, scored with `argos_at`.
+
+| arm | median km | mean bias | coverage |
+|---|---|---|---|
+| tangent (shipped) | **257** | -1.466 | **0.593** |
+| darkness regime | 317 | +0.76 | 0.338 |
+| gompertz (as lookup table) | 839 | **-0.076** | 0.077 |
+| logistic | 624 | -3.825 | 0.269 |
+
+**The trade is monotone.** Every step that corrects the response's twilight level and
+floor reduces bias and costs distance and coverage: bias 1.47 -> 0.76 -> 0.08,
+distance 257 -> 317 -> 839. The darkness regime is the EFFICIENT point -- half the
+bias reduction for 60 km, where gompertz spends a further 520 km for the rest.
+
+**Gompertz is NOT a shipping candidate**, despite fitting the clear-sky envelope 6.8x
+better than the tangent in the twilight band at no gauge cost (1.01 vs 1.39). The
+envelope prediction did not survive the fit-level test. The mechanism is visible: the
+tangent descends linearly to zero at z ~ 106 and so still discriminates latitude at
+high zenith, while gompertz asymptotes to its (physically real, measured ~0.10 of
+range) floor and goes flat there. **The tangent's wrongness is load-bearing.** The
+floor belongs in the LIKELIHOOD's darkness regime, not in the response.
+
+**Nothing tested fixes coverage** (0.59 / 0.34 / 0.08, all far below 0.95, and worse
+as bias improves). That is emission SPREAD, not response shape -- the spike is 2.4-4x
+tighter than the assumed scale and the slab is ~5x too heavy (`diag_real_residual.R`).
+
+### Two traps this run exposed
+
+1. **`all29_tags.csv` is the PRE-area-correction baseline** ("242 was two bugs
+   agreeing" -- SESSION_STATE). Comparing a faithful harness against it showed ratios
+   up to 1.58 and looked like a broken harness. Use `rescore29_results.csv` arm
+   `tangent_areaON` as the corrected-kernel reference.
+2. **TWO DEFINITIONS OF GROUND TRUTH are in use.** `argos_at()` (nes_common.R, used by
+   `fit_all29.R`) returns NA when the bracketing Argos gap exceeds 24 h;
+   `truth_at()` (defined locally in `fit_rescore29.R`, `fit_lambda_stage2.R`,
+   `fit_dark_sweep.R`, `fit_area_arm.R`) is `approx(rule = 2)` and never returns NA,
+   interpolating across arbitrary gaps and extrapolating past both track ends. They
+   differ on **4.5% of knots** -- and those are the worst-supported ones. Numbers from
+   different scripts are therefore NOT directly comparable. `argos_at` is the
+   defensible one; scoring against truth interpolated across a >24 h gap adds the
+   interpolator's error to the model's, preferentially where Argos coverage is poor.
