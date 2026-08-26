@@ -735,10 +735,27 @@ fn run_particle_filter(
                 let ymax = aux_extent[3];
                 let cell_w = (xmax - xmin) / aux_ncols as f64;
                 let cell_h = (aux_extent[3] - aux_extent[2]) / aux_nrows as f64;
-                let p_lon = particles[i].lon;
+                // Particle longitudes are kept in -180..180 (see the wrap after the
+                // proposal above), but the auxiliary raster carries whatever
+                // convention the caller's grid used. An analysis working in
+                // 0..360 therefore hands in an extent like 150..250, every
+                // particle longitude is negative relative to xmin, and
+                // `negative f64 as usize` saturates to 0 in Rust -- so every
+                // particle read column 0 and the terms lost their entire
+                // longitude dependence WITHOUT ERROR. Latitude kept working,
+                // which is what made it look functional.
+                //
+                // Wrap the longitude into the raster's own range before
+                // indexing. Both conventions describe the same circle, so this
+                // is a relabelling, not an approximation.
+                let mut p_lon = particles[i].lon;
+                while p_lon < xmin { p_lon += 360.0; }
+                while p_lon > xmax { p_lon -= 360.0; }
                 let p_lat = particles[i].lat;
-                let col_idx = ((p_lon - xmin) / cell_w).floor() as usize;
-                let row_idx = ((ymax - p_lat) / cell_h).floor() as usize;
+                let col_f = ((p_lon - xmin) / cell_w).floor();
+                let row_f = ((ymax - p_lat) / cell_h).floor();
+                let col_idx = if col_f < 0.0 { 0usize } else { col_f as usize };
+                let row_idx = if row_f < 0.0 { 0usize } else { row_f as usize };
                 let col_idx = col_idx.min(aux_ncols.saturating_sub(1));
                 let row_idx = row_idx.min(aux_nrows.saturating_sub(1));
                 let n_cells = aux_nrows * aux_ncols;
