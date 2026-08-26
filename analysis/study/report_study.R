@@ -194,7 +194,11 @@ vc <- function(y, g) {
   s2b <- max(0, (msb - msw) / n0)
   c(between = s2b, within = msw, icc = s2b / (s2b + msw))
 }
-G <- merge(TAGS[arm == "grid_light" & calibrated == TRUE], ser[, .(id, serial)], by = "id")
+# TAGS already carries `serial`; merging ser in again collides into serial.x /
+# serial.y and leaves G$serial NULL, which silently reports 0 loggers and an NA
+# ICC. Use the column that is already there.
+G <- TAGS[arm == "grid_light" & calibrated == TRUE]
+stopifnot(!anyNA(G$serial), uniqueN(G$serial) > 1)
 VC <- rbindlist(lapply(c("bias_lat", "rmse_lat", "cover_lat", "median_km"), function(v) {
   z <- vc(G[[v]], G$serial)
   data.table(metric = v, between_logger = round(z[[1]], 4),
