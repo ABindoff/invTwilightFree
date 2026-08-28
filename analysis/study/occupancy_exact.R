@@ -116,20 +116,51 @@ print(as.data.frame(res[, .(cell_deg, form, overlap = round(overlap, 3),
                             correlation = round(correlation, 3))]), row.names = FALSE)
 fwrite(res, file.path(REP, "occupancy_exact.csv"))
 
-cat("\n=== 4. BY SEASON (2 degree cells, exact posterior) ===\n")
+cat("\n=== 4. BY SEASON (2 degree cells) ===\n")
 seasons <- setdiff(names(exact_layers), "all")
 a_s <- occupancy_map(tracks(KS, "truth_lon", "truth_lat"), grid = base,
                      method = "point", weight = "tag",
                      by = function(t) season_of(format(t, "%Y-%m")))
+# Both forms, season by season, and BOTH ON THE SCORED KNOTS the Argos reference
+# uses. This matters more per season than it does overall. The exact map
+# integrates every knot, and the scored fraction is 0.83, 0.83 and 0.77 in
+# summer, autumn and winter but only 0.60 in spring, on 250 knots. Comparing an
+# all-knot model map with a scored-knot reference made the posterior look far
+# better than the point form in spring (0.382 against 0.248); on matched knots
+# that reversal disappears (0.239 against 0.248). Quote the matched columns.
+p_s <- occupancy_map(tracks(KS, "lon", "lat"), grid = base,
+                     method = "point", weight = "tag",
+                     by = function(t) season_of(format(t, "%Y-%m")))
+gs <- occupancy_map(tracks(KS, "lon", "lat", sd = TRUE), grid = base,
+                    method = "posterior", weight = "tag",
+                    by = function(t) season_of(format(t, "%Y-%m")))
+nk <- K[, .(all = .N, scored = sum(scored)),
+        by = .(sname = season_of(format(time, "%Y-%m")))]
 sres <- rbindlist(lapply(seasons, function(s) {
   if (!s %in% names(a_s)) return(NULL)
   agg <- function(r) aggregate(r, fact = 2 / GRID_CELL_DEG, fun = "sum", na.rm = TRUE)
+  a <- agg(a_s[[s]])
+  ex <- occupancy_overlap(a, agg(to_rast(exact_layers[[s]])))
+  pt <- if (s %in% names(p_s)) occupancy_overlap(a, agg(p_s[[s]])) else NULL
+  gg <- if (s %in% names(gs)) occupancy_overlap(a, agg(gs[[s]])) else NULL
+  n  <- nk[sname == s]
   data.table(season = s,
-             occupancy_overlap(agg(a_s[[s]]), agg(to_rast(exact_layers[[s]])))[, -1])
+             n_knots  = if (nrow(n)) n$all[1] else NA_integer_,
+             n_scored = if (nrow(n)) n$scored[1] else NA_integer_,
+             overlap_point = if (is.null(pt)) NA_real_ else pt$overlap,
+             overlap_gauss = if (is.null(gg)) NA_real_ else gg$overlap,
+             overlap_exact_unmatched = ex$overlap,
+             cor_exact = ex$correlation)
 }))
-print(as.data.frame(sres[, .(season, overlap = round(overlap, 3),
-                             bhattacharyya = round(bhattacharyya, 3),
-                             correlation = round(correlation, 3))]), row.names = FALSE)
+print(as.data.frame(sres[, .(season, n_knots, n_scored,
+                             point = round(overlap_point, 3),
+                             gaussian = round(overlap_gauss, 3),
+                             exact_unmatched = round(overlap_exact_unmatched, 3))]),
+      row.names = FALSE)
+cat("point and gaussian share the Argos knot set; exact_unmatched does not.
+")
+cat("Spring rests on 250 knots and supports no inference.
+")
 fwrite(sres, file.path(REP, "occupancy_exact_season.csv"))
 
 cat("\n=== 5. WHERE IS THE RESIDUAL? latitude profile, 5 degree bands ===\n")

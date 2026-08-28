@@ -38,11 +38,17 @@ robustness under adverse conditions.
 ## Performance
 
 The Rust engine makes the single-track filter fast enough for routine use. On a
-180-day deployment it completes in roughly 40 seconds, against of order two hours
-for comparable SGAT/FLightR runs on the same data. It also degrades more
-gracefully than twilight-detection methods under heavy shading, where discrete
-twilight events become unreliable. Benchmarks and the code that produces them are
-in the package vignettes.
+180-day simulated deployment the guided filter completes in about 15 seconds with
+1000 particles, against of order two hours for comparable SGAT/FLightR runs on the
+same data. The engine is single-threaded, so this does not depend on core count.
+It also degrades more gracefully than twilight-detection methods under heavy
+shading, where discrete twilight events become unreliable.
+
+On real data the grid HMM is the slower and more accurate engine: about 0.6 s per
+12-hour knot, or 1.2 s per tag-day, measured over 29 elephant seal deployments.
+Benchmarks and the code that produces them are in the package vignettes; the
+comparator timings are being re-measured back to back on a quiesced machine before
+publication, so treat the ratio above as indicative.
 
 ## Sensor fusion
 
